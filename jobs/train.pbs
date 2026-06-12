@@ -19,6 +19,12 @@ REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
 cd $REPO
 mkdir -p jobs/logs checkpoints runs
 
+# Always run the current source, never stale bytecode: clear __pycache__ and
+# disable .pyc writes. (A stale cache once caused a job to silently run
+# pre-merge code despite the working tree being up to date.)
+find src -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+export PYTHONDONTWRITEBYTECODE=1
+
 echo "Job started: $(date) on $(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 

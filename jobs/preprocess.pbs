@@ -16,6 +16,8 @@ CONDA=/glade/work/acsubram/conda-envs/credit/bin
 REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
 cd $REPO
 mkdir -p data jobs/logs
+find src -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+export PYTHONDONTWRITEBYTECODE=1
 
 echo "Job started: $(date) on $(hostname)"
 
