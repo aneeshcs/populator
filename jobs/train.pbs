@@ -2,8 +2,7 @@
 #PBS -N pop_emu_train
 #PBS -A UCUB0143
 #PBS -q casper
-#PBS -l select=1:ncpus=16:ngpus=1:mem=200GB
-#PBS -l gpu_type=a100
+#PBS -l select=1:ncpus=16:ngpus=1:mem=200GB:gpu_type=a100
 #PBS -l walltime=12:00:00
 #PBS -j oe
 #PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/train.log
