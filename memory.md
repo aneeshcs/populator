@@ -50,14 +50,28 @@ conservation laws, not a generic image regressor.
   norm stats over 19 training members) written. These are gitignored (regenerate
   with the preprocess job if missing).
 
-**Training run (job 4518431)**
+**Training run (job 4518431) — COMPLETE**
 - Submitted to Casper A100; preprocess (job 4518430) ran first via `afterok`.
-- As of last check: **running**, ~step 56,100, walltime ~10h52m of 12h, ~1.44 it/s.
+- Ran the full 12h, PBS-killed at walltime at ~step 60,350. ~1.4 it/s.
+- Model is **188.9M params** (default config width=96; the 4.5M figure from earlier
+  notes was a width=16 test override, not the production model).
 - Rollout curriculum transitioned 1→2 step at ~step 55k (epoch boundary).
-- Data loss ~0.10 (1-step) rising to ~0.2–0.3 (2-step, expected — harder target).
-  Continuity/barotropic ~1e-6, stability ~1e-5 (all healthy).
-- Checkpoint: `checkpoints/default/last.pt` (~2.3 GB, gitignored), written every
-  2000 steps. Resume with `--resume checkpoints/default/last.pt`.
+- Data loss ~0.10 (1-step) → ~0.2–0.3 (2-step, expected). Continuity/barotropic
+  ~1e-6, stability ~1e-5 (healthy). Salt penalty spiked occasionally (see fix below).
+- Checkpoint: `checkpoints/default/last.pt` (~2.3 GB, step 60000, gitignored),
+  written every 2000 steps. Resume with `--resume checkpoints/default/last.pt`.
+
+**Evaluation (job 4533577, 24-month rollout on held-out member 001) — KEY RESULT**
+- **Skill vs persistence ≈ 0 at all lead times** (TEMP/SALT/UVEL/SSH skill in
+  [-0.003, +0.005]); `emu_rmse ≈ persist_rmse`. The model learned the trivial
+  persistence solution F≈0 (tendency form makes persistence the easy minimum;
+  monthly ocean is very persistent so the data loss is already low when copying
+  the input).
+- **Conservation is excellent**: 24-month heat-content drift +1.2e-3 (0.1%),
+  salt-content drift +4e-6 (negligible). Pipeline + physics work as designed;
+  the rollout is stable over 2 years.
+- Bottom line: infrastructure fully validated end-to-end; **beating persistence
+  is the open scientific problem** (see next steps).
 
 **Known issues / fixes prepared (branch `fix/salt-budget-and-rollout`, NOT yet merged)**
 1. *Spiky salt/heat budget penalty*: the conservation term normalized the
@@ -73,14 +87,21 @@ conservation laws, not a generic image regressor.
 
 ## Next steps (in order)
 
-1. When training finishes, evaluate the final checkpoint:
-   `evaluate.py --config configs/default.yaml --checkpoint checkpoints/default/final.pt --member 001`
-   (rollout RMSE vs persistence + heat/salt drift over `eval.rollout_months`).
-2. Merge `fix/salt-budget-and-rollout` into `master`, then start a clean run (or
-   resume from `last.pt`) so the salt budget is well-behaved end-to-end.
-3. Scale up once profiled: raise `model.width`, `data.batch_size`, extend rollout
-   curriculum (4-step), add RCP8.5 members to `train_members`.
-4. Push the repo to GitHub when ready (currently local only).
+1. **Beat persistence** — the central problem. The tendency-form model collapsed
+   to F≈0 because persistence already gives low normalized data loss. Levers:
+   - Train on **anomalies relative to a monthly climatology** (remove the
+     persistent mean state so the loss targets the actual evolution).
+   - **Weight the loss toward the tendency** (e.g. loss on `Δ = x_{t+1}-x_t`, or a
+     skill/ACC-style objective) so copying the input is no longer the easy minimum.
+   - More **multi-step rollout** training (curriculum to 4+; only ~5k of 60k steps
+     were 2-step) — penalizes persistence over long horizons.
+   - Longer training / more members (add RCP8.5 to `train_members`).
+2. Merge `fix/salt-budget-and-rollout` into `master` before the next run (bounded
+   salt/heat penalty + per-batch rollout curriculum). Resume from `last.pt` or
+   start fresh.
+3. Eval is fast (~3 min CPU): `qsub jobs/evaluate.pbs` (override `CKPT=`, `MEMBER=`).
+4. Scale up once profiled: `model.width`, `data.batch_size`, longer curriculum.
+5. Push the repo to GitHub when ready (currently local only).
 
 ## Gotchas to remember
 
