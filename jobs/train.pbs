@@ -22,9 +22,13 @@ mkdir -p jobs/logs checkpoints runs
 echo "Job started: $(date) on $(hostname)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-RESUME=""
-[ -f checkpoints/default/last.pt ] && RESUME="--resume checkpoints/default/last.pt"
+CONFIG=${CONFIG:-configs/default.yaml}
+CKPT_DIR=${CKPT_DIR:-checkpoints/default}
+echo "config=$CONFIG ckpt_dir=$CKPT_DIR"
 
-$CONDA/python scripts/train.py --config configs/default.yaml $RESUME
+RESUME=""
+[ -f "$CKPT_DIR/last.pt" ] && RESUME="--resume $CKPT_DIR/last.pt"
+
+$CONDA/python scripts/train.py --config "$CONFIG" $RESUME
 
 echo "Job finished: $(date)"

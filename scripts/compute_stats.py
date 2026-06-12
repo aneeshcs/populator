@@ -66,6 +66,47 @@ def scalar_stats_2d(files_by_member, var, mask2d, times):
     return np.float32(mean), np.float32(std)
 
 
+def tendency_std_3d(files_by_member, var, mask3d, times, step):
+    """Per-level std of the one-step tendency Δ = x(t+step) - x(t).
+
+    The data loss is normalized by this (not the field std) so that predicting
+    no change (persistence) is a high-loss solution and the optimizer must learn
+    the actual month-to-month evolution.
+    """
+    nz = mask3d.shape[0]
+    n = np.zeros(nz); s1 = np.zeros(nz); s2 = np.zeros(nz)
+    m2d = mask3d.astype(bool)
+    for member, files in files_by_member.items():
+        da = _open_var(files, var)
+        nt = da.sizes["time"]
+        for t in pick_times(nt - step, times):
+            d = _clean(da.isel(time=t + step).values) - _clean(da.isel(time=t).values)
+            for k in range(nz):
+                vals = d[k][m2d[k]]
+                n[k] += vals.size
+                s1[k] += vals.sum(dtype=np.float64)
+                s2[k] += np.square(vals, dtype=np.float64).sum(dtype=np.float64)
+    mean = s1 / np.maximum(n, 1)
+    var_ = np.maximum(s2 / np.maximum(n, 1) - mean ** 2, 0.0)
+    return np.sqrt(var_).astype("float32")
+
+
+def tendency_std_2d(files_by_member, var, mask2d, times, step):
+    m = mask2d.astype(bool)
+    n = s1 = s2 = 0.0
+    for member, files in files_by_member.items():
+        da = _open_var(files, var)
+        nt = da.sizes["time"]
+        for t in pick_times(nt - step, times):
+            d = _clean(da.isel(time=t + step).values) - _clean(da.isel(time=t).values)
+            vals = d[m] if d.ndim == 2 else d[:, m].reshape(-1)
+            n += vals.size
+            s1 += vals.sum(dtype=np.float64)
+            s2 += np.square(vals, dtype=np.float64).sum(dtype=np.float64)
+    mean = s1 / max(n, 1)
+    return np.float32(np.sqrt(max(s2 / max(n, 1) - mean ** 2, 0.0)))
+
+
 def _open_var(files, var):
     if len(files) == 1:
         return xr.open_dataset(files[0], decode_times=False, chunks={"time": 1})[var]
@@ -108,16 +149,30 @@ def main():
         for m in members:
             files_by_member.setdefault(m, member_files(d["root"], d["experiment"], m, v))
 
+    step = d.get("step_months", 1)
+    tend_times = max(8, args.max_times // 2) if args.max_times else None
+
     ds_out = xr.Dataset()
     for v in d["prognostic"]:
         fbm = {m: member_files(d["root"], d["experiment"], m, v) for m in members}
         mean, std = level_stats_3d(fbm, v, mask3d, args.max_times)
+        tstd = tendency_std_3d(fbm, v, mask3d, tend_times, step)
         ds_out[f"{v}_mean"] = ("z_t", mean)
         ds_out[f"{v}_std"] = ("z_t", std)
-        print(f"[stats] {v}: surface mean={mean[0]:.4g} std={std[0]:.4g} | "
-              f"deep std={std[-1]:.4g}")
+        ds_out[f"{v}_tend_std"] = ("z_t", tstd)
+        print(f"[stats] {v}: surface mean={mean[0]:.4g} std={std[0]:.4g} "
+              f"tend_std={tstd[0]:.4g} | deep std={std[-1]:.4g} tend_std={tstd[-1]:.4g}")
 
-    for v in d["surface_prognostic"] + d["forcing"]:
+    for v in d["surface_prognostic"]:
+        fbm = {m: member_files(d["root"], d["experiment"], m, v) for m in members}
+        mean, std = scalar_stats_2d(fbm, v, mask2d, args.max_times)
+        tstd = tendency_std_2d(fbm, v, mask2d, tend_times, step)
+        ds_out[f"{v}_mean"] = ((), mean)
+        ds_out[f"{v}_std"] = ((), std)
+        ds_out[f"{v}_tend_std"] = ((), tstd)
+        print(f"[stats] {v}: mean={mean:.4g} std={std:.4g} tend_std={tstd:.4g}")
+
+    for v in d["forcing"]:
         fbm = {m: member_files(d["root"], d["experiment"], m, v) for m in members}
         mean, std = scalar_stats_2d(fbm, v, mask2d, args.max_times)
         ds_out[f"{v}_mean"] = ((), mean)
