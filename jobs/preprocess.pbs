@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -N pop_emu_prep
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l select=1:ncpus=8:mem=120GB
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/preprocess.log
+
+# Build the static grid file and compute normalization statistics.
+# CPU job: streams the CESM-LENS time series lazily; 120 GB gives Dask headroom.
+
+set -e
+module load conda/latest 2>/dev/null || true
+CONDA=/glade/work/acsubram/conda-envs/credit/bin
+REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
+cd $REPO
+mkdir -p data jobs/logs
+
+echo "Job started: $(date) on $(hostname)"
+
+$CONDA/python scripts/build_grid.py    --config configs/default.yaml
+$CONDA/python scripts/compute_stats.py --config configs/default.yaml --max-times 120
+
+echo "Job finished: $(date)"

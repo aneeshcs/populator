@@ -1,0 +1,76 @@
+# Default experiment configuration for the POP ocean emulator.
+# All paths are absolute for the NCAR GLADE filesystem.
+
+seed: 0
+
+data:
+  root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+  experiment: B20TRC5CNBDRD          # historical members for the base experiment
+  grid_member: "001"                 # member whose file the static grid is read from
+  grid_file: data/grid_gx1v6.nc      # written by scripts/build_grid.py
+  stats_file: data/stats.nc          # written by scripts/compute_stats.py
+
+  prognostic: [TEMP, SALT, UVEL, VVEL]   # 3-D state variables
+  surface_prognostic: [SSH]              # 2-D state variables
+  forcing: [SHF, SHF_QSW, SFWF, TAUX, TAUY]
+
+  nlev: 60
+  nlat: 384
+  nlon: 320
+
+  # Ensemble-member splits (POP-LENS member ids as zero-padded strings).
+  train_members: ["002","003","004","005","006","007","008","009","010",
+                  "011","012","013","014","015","016","017","018","019","020"]
+  val_members:   ["001"]
+  test_members:  ["021","022"]
+
+  # Time window within each member's record (model months from file start).
+  t_start: 360       # skip 1850-1879 spin-up portion for historical
+  t_end: -1
+  step_months: 1     # Δt = 1 model month
+
+normalize:
+  per_level: true    # standardize each z-level separately
+
+model:
+  arch: spherical_unet
+  width: 96          # base channel width
+  depth: 4           # encoder/decoder stages
+  blocks_per_stage: 2
+  film_forcing: true # FiLM-condition the bottleneck on forcing + month
+  residual_update: true   # predict tendency: x_{t+1} = x_t + dt * F(x_t, ...)
+
+physics:
+  diagnose_wvel: true
+  barotropic: rigid_lid        # rigid_lid | free_surface
+  loss_weights:
+    data: 1.0
+    continuity: 0.1            # rigid-lid surface kinematic
+    barotropic: 0.1            # vertically integrated divergence
+    heat: 0.05                 # heat-content budget vs SHF
+    salt: 0.05                 # salt-content budget vs SFWF
+    stability: 0.02            # no spurious convective instability
+    spectral: 0.0              # KE-spectrum slope (off by default)
+  # Curriculum: physics weights ramp from 0 to full over this many steps.
+  physics_warmup_steps: 2000
+
+train:
+  rollout_steps: 1             # increase (2,4,...) for multi-step fine-tuning
+  rollout_curriculum: [[0, 1], [40000, 2], [80000, 4]]  # [step, rollout_len]
+  batch_size: 1                # one global field per sample (memory bound)
+  grad_accum: 4
+  epochs: 50
+  lr: 2.0e-4
+  weight_decay: 0.05
+  warmup_steps: 1000
+  amp: true                    # mixed precision (bf16 on A100/H100)
+  grad_clip: 1.0
+  num_workers: 4
+  ckpt_dir: checkpoints/default
+  log_dir: runs/default
+  log_every: 50
+  ckpt_every: 2000
+
+eval:
+  rollout_months: 24           # forecast horizon for skill evaluation
+  reference: persistence       # baseline to beat

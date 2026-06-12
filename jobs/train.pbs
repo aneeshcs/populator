@@ -1,0 +1,31 @@
+#!/bin/bash
+#PBS -N pop_emu_train
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l select=1:ncpus=16:ngpus=1:mem=200GB
+#PBS -l gpu_type=a100
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/train.log
+
+# Train the POP ocean emulator on one A100. The global gx1v6 field
+# (60 levels x 4 vars + forcing) at batch_size 1 with bf16 fits comfortably;
+# raise data.batch_size / model.width once profiled. Requires data/grid_gx1v6.nc
+# and data/stats.nc (run jobs/preprocess.pbs first).
+
+set -e
+module load conda/latest 2>/dev/null || true
+CONDA=/glade/work/acsubram/conda-envs/credit/bin
+REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
+cd $REPO
+mkdir -p jobs/logs checkpoints runs
+
+echo "Job started: $(date) on $(hostname)"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+
+RESUME=""
+[ -f checkpoints/default/last.pt ] && RESUME="--resume checkpoints/default/last.pt"
+
+$CONDA/python scripts/train.py --config configs/default.yaml $RESUME
+
+echo "Job finished: $(date)"

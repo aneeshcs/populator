@@ -1,0 +1,32 @@
+# Data and artifacts
+data/*.nc
+data/*.zarr/
+!data/.gitkeep
+checkpoints/
+runs/
+wandb/
+*.pt
+*.ckpt
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# PBS logs
+*.o[0-9]*
+*.e[0-9]*
+jobs/logs/

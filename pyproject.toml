@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pop-ocean-emulator"
+version = "0.1.0"
+description = "Physics-informed deep-learning emulator that integrates the 3-D POP/CESM-LENS ocean state forward in time."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Aneesh Subramanian" }]
+license = { text = "MIT" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
