@@ -8,7 +8,7 @@ each channel using statistics computed by ``scripts/compute_stats.py``.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -99,6 +99,34 @@ class Normalizer:
             f"stats give {mean.numel()} channels, packer expects {packer.n_channels}"
         )
         return cls(mean, std)
+
+
+def tendency_loss_weights(stats_path: str, packer: StatePacker,
+                          clip: float = 1.0e4) -> Optional[torch.Tensor]:
+    """Per-channel data-loss weights ``(σ_field / σ_tendency)²``.
+
+    The data loss operates in field-normalized space. Multiplying each channel by
+    this weight re-expresses the error in *tendency* units, so predicting no
+    change (persistence) yields an O(1) loss instead of a vanishingly small one —
+    the optimizer is then forced to learn the month-to-month evolution rather
+    than collapsing to the identity. Returns ``None`` if the stats file lacks the
+    ``*_tend_std`` fields (older stats), in which case the loss is unweighted.
+    """
+    import numpy as np
+    import xarray as xr
+
+    weights = []
+    with xr.open_dataset(stats_path) as ds:
+        for v in packer.prognostic + packer.surface:
+            if f"{v}_tend_std" not in ds:
+                return None
+            fstd = np.asarray(ds[f"{v}_std"].values).reshape(-1)
+            tstd = np.asarray(ds[f"{v}_tend_std"].values).reshape(-1)
+            w = (fstd / np.clip(tstd, 1e-12, None)) ** 2
+            weights.append(np.broadcast_to(w, (packer.nlev if v in packer.prognostic else 1,)))
+    w = np.concatenate(weights)
+    w = np.clip(w, 0.0, clip)
+    return torch.as_tensor(w, dtype=torch.float32)
 
 
 class ForcingNormalizer:

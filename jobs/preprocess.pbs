@@ -19,7 +19,9 @@ mkdir -p data jobs/logs
 
 echo "Job started: $(date) on $(hostname)"
 
-$CONDA/python scripts/build_grid.py    --config configs/default.yaml
-$CONDA/python scripts/compute_stats.py --config configs/default.yaml --max-times 120
+CONFIG=${CONFIG:-configs/default.yaml}
+echo "config=$CONFIG"
+$CONDA/python scripts/build_grid.py    --config "$CONFIG"
+$CONDA/python scripts/compute_stats.py --config "$CONFIG" --max-times 120
 
 echo "Job finished: $(date)"

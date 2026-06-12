@@ -145,6 +145,13 @@ def main():
                   f"({len(loader.dataset)} samples)")
 
         for batch in loader:
+            # Honor the rollout curriculum at batch granularity: if the length
+            # has changed, break to rebuild the loader rather than waiting for
+            # the current epoch to finish (epochs are ~tens of thousands of
+            # samples, which would otherwise delay the transition).
+            if utils.rollout_len_for_step(curriculum, step) != cur_rollout:
+                break
+
             lr = cosine_warmup(step, tcfg.get("warmup_steps", 0), total_steps, tcfg["lr"])
             for g in opt.param_groups:
                 g["lr"] = lr

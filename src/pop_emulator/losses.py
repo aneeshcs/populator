@@ -36,8 +36,21 @@ class CompositeLoss:
             mask_chans.append(grid.mask2d.unsqueeze(0))          # (1, J, I)
         self.chan_mask = torch.cat(mask_chans, dim=0).unsqueeze(0)
 
+        # Optional per-channel tendency weighting: re-expresses the data loss in
+        # tendency units so persistence is no longer the easy minimum. Enabled by
+        # normalize.tendency_weighted_loss and the *_tend_std fields in stats.nc.
+        self.chan_weight = None
+        if cfg.get("normalize", {}).get("tendency_weighted_loss", False):
+            from .normalization import tendency_loss_weights
+            stats_file = cfg["data"].get("stats_file")
+            w = tendency_loss_weights(stats_file, packer) if stats_file else None
+            if w is not None:
+                self.chan_weight = w.view(1, -1, 1, 1)
+
     def to(self, device):
         self.chan_mask = self.chan_mask.to(device)
+        if self.chan_weight is not None:
+            self.chan_weight = self.chan_weight.to(device)
         return self
 
     def _phys_scale(self, step: int) -> float:
@@ -51,7 +64,11 @@ class CompositeLoss:
                  step: int = 10 ** 9) -> Dict[str, torch.Tensor]:
         mask = self.chan_mask
         # --- data term: masked per-channel MSE in normalized space --------- #
+        # With tendency weighting, each channel is scaled by (σ_field/σ_tend)²,
+        # so the squared error is measured in tendency units (persistence -> O(1)).
         diff2 = (pred_norm - target_norm) ** 2 * mask
+        if self.chan_weight is not None:
+            diff2 = diff2 * self.chan_weight
         denom = mask.sum().clamp_min(1.0)
         data_loss = diff2.sum() / denom
 
