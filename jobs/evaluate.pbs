@@ -1,0 +1,30 @@
+#!/bin/bash
+#PBS -N pop_emu_eval
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l select=1:ncpus=8:mem=120GB
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/evaluate.log
+
+# Roll out the trained emulator on a held-out member and report skill vs
+# persistence plus heat/salt budget drift. CPU is fine for a 24-month rollout
+# of a single global field; uses checkpoints/default/last.pt by default.
+
+set -e
+module load conda/latest 2>/dev/null || true
+CONDA=/glade/work/acsubram/conda-envs/credit/bin
+REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
+cd $REPO
+mkdir -p jobs/logs
+
+CKPT=${CKPT:-checkpoints/default/last.pt}
+MEMBER=${MEMBER:-001}
+
+echo "Job started: $(date) on $(hostname)"
+echo "checkpoint=$CKPT member=$MEMBER"
+
+$CONDA/python scripts/evaluate.py --config configs/default.yaml \
+    --checkpoint "$CKPT" --member "$MEMBER"
+
+echo "Job finished: $(date)"
