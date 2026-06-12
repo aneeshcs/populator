@@ -73,7 +73,16 @@ conservation laws, not a generic image regressor.
 - Bottom line: infrastructure fully validated end-to-end; **beating persistence
   is the open scientific problem** (addressed in run 2 below).
 
-**Run 2 — LAUNCHED 2026-06-12 (jobs 4533715 preprocess, 4533716 train; held on afterok)**
+**Run 2 — RUNNING 2026-06-12 as job 4538136 (preprocess was 4533715)**
+- NB: first two train submissions were scrapped — `4533716` ran stale `.pyc`
+  bytecode (old code: unbounded salt, unweighted loss); `4537803` then resumed
+  from `4533716`'s contaminated checkpoint. Job `4538136` is the clean one:
+  fresh start, cleared `__pycache__`, correct code.
+- **Persistence baseline (weighted) = data loss ~0.90 at step 0** (was ~0.10
+  unweighted). Model must drive data loss below ~0.90 to beat persistence.
+  Salt/heat penalties bounded at 1.0 (confirmed). Watch the data-loss trend.
+
+(original launch notes, job ids superseded by 4538136 above)
 - `fix/salt-budget-and-rollout` MERGED to master (3a0ae17).
 - Config `configs/run2.yaml`: `normalize.tendency_weighted_loss: true`; heat/salt
   weights lowered to 0.02 (they reward F=0); rollout curriculum
@@ -126,6 +135,15 @@ conservation laws, not a generic image regressor.
   job-level `-l` (fixed in `jobs/train.pbs`). Account `UCUB0143`, queue `casper`.
 - EOS `mwjf_density`: salinity is floored at 1e-2 before `sqrt(S)` or land cells
   (S=0) produce NaN gradients.
+- **Stale bytecode**: a PBS job once silently ran old `__pycache__/*.pyc` despite
+  the working tree being correct (showed unbounded salt + unweighted loss). The
+  PBS jobs now clear `src/**/__pycache__` and set `PYTHONDONTWRITEBYTECODE=1` at
+  startup. If a job's behavior contradicts the on-disk code, suspect bytecode.
+- **Resume gotcha**: `train.pbs` auto-resumes from `$CKPT_DIR/last.pt` if present.
+  To force a fresh run, `rm -rf` the ckpt dir first (else it warm-starts, possibly
+  from a bad checkpoint).
+- Multiple jobs append sections to `jobs/logs/train.log` — read the section after
+  the last `Job started` line for the current job.
 - Member records differ in start year (001 historical = 1850 → 1872 months;
   most others = 1920 → 1032 months); `data.t_start` must be within range or the
   dataset is empty.
