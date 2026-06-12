@@ -203,14 +203,22 @@ def conservation_losses(pred: Dict[str, torch.Tensor],
     dt = SECONDS_PER_MONTH if dt is None else dt
     out: Dict[str, torch.Tensor] = {}
 
+    # Both budgets are expressed as a *bounded relative closure error*:
+    # globally, interior advection/diffusion integrate to zero, so the change in
+    # total content must equal the surface-flux integral. Normalizing the
+    # violation by the magnitude of the change itself keeps the term in
+    # [0, ~4] for any batch (no dependence on a hand-tuned scale), which avoids
+    # the spikes that arise when the flux-implied change happens to be ~0.
+    eps_h, eps_s = 1.0e10, 1.0e8
+
     # --- heat-content budget --------------------------------------------- #
     dH = heat_content(pred["TEMP"], grid) - heat_content(prev["TEMP"], grid)
     dH_flux = torch.zeros_like(dH)
     if forcing is not None and "SHF" in forcing:
         area = _surface_area_m2(grid).unsqueeze(0)
         dH_flux = dt * (forcing["SHF"].double() * area.double()).flatten(1).sum(dim=1)
-    scaleH = dH_flux.abs().mean().clamp_min(1.0e15) + 1.0e15
-    out["heat"] = (((dH - dH_flux) / scaleH) ** 2).mean()
+    denomH = (dH.abs() + dH_flux.abs()).clamp_min(eps_h)
+    out["heat"] = (((dH - dH_flux) / denomH) ** 2).mean()
     out["heat_drift_J"] = (dH - dH_flux).mean().detach()
 
     # --- salt-content budget --------------------------------------------- #
@@ -222,8 +230,8 @@ def conservation_losses(pred: Dict[str, torch.Tensor],
         c = grid.consts
         sflux = forcing["SFWF"].double() * c.ocn_ref_salinity  # psu * kg/m2/s scale
         dS_flux = dt * (sflux * area.double()).flatten(1).sum(dim=1)
-    scaleS = dS_flux.abs().mean().clamp_min(1.0e12) + 1.0e12
-    out["salt"] = (((dS - dS_flux) / scaleS) ** 2).mean()
+    denomS = (dS.abs() + dS_flux.abs()).clamp_min(eps_s)
+    out["salt"] = (((dS - dS_flux) / denomS) ** 2).mean()
     out["salt_drift"] = (dS - dS_flux).mean().detach()
 
     # --- barotropic / volume (rigid-lid) --------------------------------- #
