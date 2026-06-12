@@ -71,19 +71,33 @@ conservation laws, not a generic image regressor.
   salt-content drift +4e-6 (negligible). Pipeline + physics work as designed;
   the rollout is stable over 2 years.
 - Bottom line: infrastructure fully validated end-to-end; **beating persistence
-  is the open scientific problem** (see next steps).
+  is the open scientific problem** (addressed in run 2 below).
 
-**Known issues / fixes prepared (branch `fix/salt-budget-and-rollout`, NOT yet merged)**
-1. *Spiky salt/heat budget penalty*: the conservation term normalized the
-   violation by the flux-implied change (`dH_flux`), which is ~0 when net flux is
-   small → squared ratio exploded (salt spiked >1e3, total loss to ~64 around
-   step 40k). Fixed to a **bounded relative closure error** (normalize by the
-   magnitude of the change itself; bounded [0,~4]). Physically exact since global
-   interior advection/diffusion integrate to zero.
+**Run 2 — LAUNCHED 2026-06-12 (jobs 4533715 preprocess, 4533716 train; held on afterok)**
+- `fix/salt-budget-and-rollout` MERGED to master (3a0ae17).
+- Config `configs/run2.yaml`: `normalize.tendency_weighted_loss: true`; heat/salt
+  weights lowered to 0.02 (they reward F=0); rollout curriculum
+  [[0,1],[12000,2],[30000,4]]; `ckpt_dir: checkpoints/run2` (run 1 preserved);
+  starts FRESH (not resumed — run-1 weights sit in the persistence basin).
+- Tendency-weighted loss makes persistence an O(1)-loss solution (was ~0.0025),
+  forcing the model to learn month-to-month evolution. Validated: persistence
+  data loss = 1.0; weights 0.8..1e4 (deep T/S clamped — they barely change monthly).
+- Preprocess regenerates `data/stats.nc` with `*_tend_std` fields.
+- PBS jobs take `CONFIG=` / `CKPT_DIR=` env overrides:
+  `qsub -v CONFIG=configs/run2.yaml jobs/preprocess.pbs` then
+  `qsub -W depend=afterok:<prep> -v CONFIG=configs/run2.yaml,CKPT_DIR=checkpoints/run2 jobs/train.pbs`.
+- **Watch:** does run 2 beat persistence? After it trains, eval with
+  `CKPT=checkpoints/run2/last.pt MEMBER=001 qsub jobs/evaluate.pbs`.
+
+**Fixes shipped in run 2 (merged to master 2026-06-12, commit 3a0ae17)**
+1. *Spiky salt/heat budget penalty*: was normalized by the flux-implied change
+   (`dH_flux` ~0 when net flux small) → squared ratio exploded (salt >1e3, loss
+   ~64 at step 40k). Now a **bounded relative closure error** (normalize by the
+   magnitude of the change itself; bounded). Physically exact (interior
+   advection/diffusion integrate to zero globally).
 2. *Rollout curriculum only honored at epoch boundaries*: now re-checked
-   per-batch and the loader rebuilt on change.
-   Both validated by smoke + unit + a stress test. **Merge this branch before the
-   next run.**
+   per-batch, loader rebuilt on change.
+3. *Persistence collapse*: **tendency-weighted data loss** (see run 2 above).
 
 ## Next steps (in order)
 
