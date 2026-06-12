@@ -1,0 +1,98 @@
+# Project Memory — POP Ocean Emulator
+
+Restart-here notes for the physics-informed ocean emulator. Last updated
+2026-06-12. For *how to run / what tools are needed*, see `skills.md`.
+
+---
+
+## What this project is
+
+A physics-informed deep-learning emulator that integrates the 3-D ocean state
+(potential temperature, salinity, horizontal velocity, SSH) forward in time on
+the POP2 `gx1v6` grid, trained on the CESM-CAM5-BGC Large Ensemble. Goal: a
+learned discrete time-integrator that respects POP's primitive equations and
+conservation laws, not a generic image regressor.
+
+- Repo: `/glade/work/acsubram/GitRepos/pop-ocean-emulator` (git, default branch `master`)
+- Design/physics rationale: `README.md`, `docs/physics.md`, `docs/data.md`
+
+## Data (CESM-LENS, POP2, gx1v6)
+
+- Root: `/glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly`
+- Grid 384 (nlat) × 320 (nlon) × 60 (z_t). Monthly is the only frequency with
+  full 3-D fields (daily is surface-only).
+- Members: ~52 historical (`B20TRC5CNBDRD`) + ~73 RCP8.5 (`BRCP85C5CNBDRD`).
+  Each 3-D variable is ~23 GB/member → stream lazily, never load whole.
+- **Prognostic (predicted):** TEMP, SALT (T-cells), UVEL, VVEL (U-cells), SSH (2-D).
+- **Diagnosed, not predicted:** WVEL (from continuity), density (MWJF EOS from T,S).
+- **Forcing inputs:** SHF, SHF_QSW, SFWF, TAUX, TAUY.
+- Static grid + POP constants (CGS) are embedded in every history file; extracted
+  once into `data/grid_gx1v6.nc`.
+
+## Architecture & physics (as built)
+
+- Grid-aware spherical U-Net (`src/pop_emulator/model.py`), **tendency form**
+  `x_{t+1} = x_t + Δt·F(x_t, forcing, grid)`, output land-masked. Periodic-lon /
+  replicate-lat (tripole) padding. Static channels: Coriolis f, mask, depth, lat/lon.
+- Physics-informed loss (`losses.py` + `physics.py`): per-level data MSE +
+  continuity (rigid lid) + barotropic/volume + heat & salt budgets + static
+  stability; physics weights ramped via warmup curriculum.
+- W diagnosed from continuity → incompressible by construction. MWJF-2003 EOS
+  (McDougall et al.), pressure in dbar; surface ρ matches EOS-80 to <0.01.
+
+## State of play (2026-06-12)
+
+**Done & validated**
+- Full repo scaffolded, committed. `scripts/smoke_test.py` passes; 9 physics
+  unit tests pass (`tests/test_physics.py`).
+- Real-data integration verified (grid build, slice reads, EOS/wvel/budgets).
+- Preprocess job done → `data/grid_gx1v6.nc` (6.6 MB) and `data/stats.nc` (per-level
+  norm stats over 19 training members) written. These are gitignored (regenerate
+  with the preprocess job if missing).
+
+**Training run (job 4518431)**
+- Submitted to Casper A100; preprocess (job 4518430) ran first via `afterok`.
+- As of last check: **running**, ~step 56,100, walltime ~10h52m of 12h, ~1.44 it/s.
+- Rollout curriculum transitioned 1→2 step at ~step 55k (epoch boundary).
+- Data loss ~0.10 (1-step) rising to ~0.2–0.3 (2-step, expected — harder target).
+  Continuity/barotropic ~1e-6, stability ~1e-5 (all healthy).
+- Checkpoint: `checkpoints/default/last.pt` (~2.3 GB, gitignored), written every
+  2000 steps. Resume with `--resume checkpoints/default/last.pt`.
+
+**Known issues / fixes prepared (branch `fix/salt-budget-and-rollout`, NOT yet merged)**
+1. *Spiky salt/heat budget penalty*: the conservation term normalized the
+   violation by the flux-implied change (`dH_flux`), which is ~0 when net flux is
+   small → squared ratio exploded (salt spiked >1e3, total loss to ~64 around
+   step 40k). Fixed to a **bounded relative closure error** (normalize by the
+   magnitude of the change itself; bounded [0,~4]). Physically exact since global
+   interior advection/diffusion integrate to zero.
+2. *Rollout curriculum only honored at epoch boundaries*: now re-checked
+   per-batch and the loader rebuilt on change.
+   Both validated by smoke + unit + a stress test. **Merge this branch before the
+   next run.**
+
+## Next steps (in order)
+
+1. When training finishes, evaluate the final checkpoint:
+   `evaluate.py --config configs/default.yaml --checkpoint checkpoints/default/final.pt --member 001`
+   (rollout RMSE vs persistence + heat/salt drift over `eval.rollout_months`).
+2. Merge `fix/salt-budget-and-rollout` into `master`, then start a clean run (or
+   resume from `last.pt`) so the salt budget is well-behaved end-to-end.
+3. Scale up once profiled: raise `model.width`, `data.batch_size`, extend rollout
+   curriculum (4-step), add RCP8.5 members to `train_members`.
+4. Push the repo to GitHub when ready (currently local only).
+
+## Gotchas to remember
+
+- Conda env for everything: `/glade/work/acsubram/conda-envs/credit/bin/python`
+  (torch 2.10+cu128, xarray, einops, timm). **pytest is NOT in `credit`** — it's
+  in the `fme` env, or run tests via the small fallback loop in this repo's history.
+- PBS: `gpu_type` must go *inside* the `select` chunk on Casper, not as a
+  job-level `-l` (fixed in `jobs/train.pbs`). Account `UCUB0143`, queue `casper`.
+- EOS `mwjf_density`: salinity is floored at 1e-2 before `sqrt(S)` or land cells
+  (S=0) produce NaN gradients.
+- Member records differ in start year (001 historical = 1850 → 1872 months;
+  most others = 1920 → 1032 months); `data.t_start` must be within range or the
+  dataset is empty.
+- Robust PBS state polling: `qstat -f <id> | awk -F' = ' '/job_state/{print $2}'`
+  (the single-job `qstat <id>` column layout is easy to mis-parse).
