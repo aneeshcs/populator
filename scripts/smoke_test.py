@@ -97,6 +97,30 @@ def main():
     gnorm = sum(p.grad.abs().sum() for p in model.parameters() if p.grad is not None)
     check("gradients flow to the model", float(gnorm) > 0)
 
+    print("7. History (2-state input) + pushforward rollout")
+    cfg2 = testing.synthetic_cfg()
+    cfg2["model"]["history"] = 2
+    model2 = OceanEmulator(cfg2, packer, grid, n_forcing=len(forcing_list))
+    x_hist = torch.stack([x, x], dim=1)  # (B, H=2, C, J, I)
+    y2 = model2(x_hist, fnz, cond)
+    check("history forward output shape", y2.shape == x.shape)
+    check("history residual identity at init", torch.allclose(y2, x, atol=1e-5))
+
+    # mini pushforward: 3 detached steps, per-step backward (as in training)
+    loss_fn2 = CompositeLoss(cfg2, packer, norm, grid)
+    chan_mask = loss_fn2.chan_mask
+    hist = [x, x]
+    me = torch.tensor([[0.0, 1.0], [0.5, 0.5]])
+    for s in range(3):
+        xin = torch.stack(hist, dim=1) + 0.1 * torch.randn_like(torch.stack(hist, dim=1))
+        xn = model2(xin, fnz, month_cond(me, fnz)) * chan_mask
+        r = loss_fn2(xn, target, hist[-1], forcing_phys=forcing_phys, step=10 ** 9)
+        (r["loss"] / 3).backward()
+        hist.append(xn.detach()); hist.pop(0)
+    g2 = sum(p.grad.abs().sum() for p in model2.parameters() if p.grad is not None)
+    check("pushforward gradients finite & flowing",
+          bool(torch.isfinite(torch.as_tensor(float(g2)))) and float(g2) > 0)
+
     print(f"\n{GREEN}All smoke checks passed.{RESET}")
 
 

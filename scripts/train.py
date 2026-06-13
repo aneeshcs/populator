@@ -56,37 +56,56 @@ def pack_forcing(batch_forcing, forcing_list, s, device):
     return torch.stack([batch_forcing[v][:, s].to(device) for v in forcing_list], dim=1)
 
 
-def train_step(batch, model, packer, normalizer, fnorm, loss_fn, forcing_list,
-               rollout_len, device, step):
-    state0 = {k: v.to(device) for k, v in batch["state_t"].items()}
-    x = normalizer.normalize(packer.pack(state0))
+def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
+                     forcing_list, rollout_len, noise, device, step, accum,
+                     use_amp, amp_dtype):
+    """Memory-safe pushforward rollout with optional input-noise injection.
+
+    The model is unrolled ``rollout_len`` months feeding its own *detached*
+    predictions back as input history (so it learns to correct its own error),
+    and the per-step loss is back-propagated immediately. Because each input is
+    detached, memory stays at one step's graph regardless of rollout length,
+    which lets the curriculum go to long rollouts without OOM. All physics
+    constraints are applied at every step via ``loss_fn``.
+    """
+    statevars = packer.prognostic + packer.surface
+    H = model.history
     chan_mask = loss_fn.chan_mask
+
+    # Normalized input history (oldest .. newest), each (B, C, J, I).
+    hist = [normalizer.normalize(packer.pack(
+                {v: batch["state_hist"][v][:, h].to(device) for v in statevars}))
+            for h in range(H)]
     month_emb = batch["month_emb"].to(device)
 
-    total = 0.0
+    total_val = 0.0
     last_logs = {}
     for s in range(rollout_len):
-        fz_phys = pack_forcing(batch["forcing"], forcing_list, s, device)
-        fnz = fnorm.normalize(fz_phys)
+        fnz = fnorm.normalize(pack_forcing(batch["forcing"], forcing_list, s, device))
         cond = month_cond(month_emb, fnz)
+        prev = hist[-1]                                   # clean residual anchor
+        x_in = hist[-1] if H == 1 else torch.stack(hist, dim=1)
+        if noise > 0:
+            x_in = x_in + noise * torch.randn_like(x_in)  # perturb network input only
 
-        prev = x
-        x = model(x, fnz, cond)
-        x = x * chan_mask
-
-        # target at step s
-        tgt = {v: batch["targets"][v][:, s].to(device) for v in packer.prognostic}
-        tgt.update({v: batch["targets"][v][:, s].to(device) for v in packer.surface})
-        tgt_norm = normalizer.normalize(packer.pack(tgt))
-
+        tgt = {v: batch["targets"][v][:, s].to(device) for v in statevars}
         forcing_phys = {v: batch["forcing"][v][:, s].to(device) for v in forcing_list}
-        res = loss_fn(x, tgt_norm, prev, forcing_phys=forcing_phys, step=step)
-        total = total + res["loss"]
+
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            x_next = model(x_in, fnz, cond, base=prev) * chan_mask
+            tgt_norm = normalizer.normalize(packer.pack(tgt))
+            res = loss_fn(x_next, tgt_norm, prev, forcing_phys=forcing_phys, step=step)
+            loss_s = res["loss"] / (rollout_len * accum)
+        loss_s.backward()
+
+        total_val += float(res["logs"]["total"])
         last_logs = res["logs"]
+        hist.append(x_next.detach())          # pushforward: feed own prediction
+        if len(hist) > H:
+            hist.pop(0)
         month_emb = _advance_month_emb(month_emb)
 
-    total = total / rollout_len
-    return total, last_logs
+    return total_val / rollout_len, last_logs
 
 
 def main():
@@ -132,6 +151,10 @@ def main():
             print(f"[train] tensorboard unavailable: {e}")
 
     accum = tcfg.get("grad_accum", 1)
+    noise = tcfg.get("noise_injection", 0.0)
+    if model.history > 1 or noise > 0:
+        print(f"[train] history={model.history}  noise_injection={noise}  "
+              f"(pushforward, per-step backward)")
     t0 = time.time()
     model.train()
     done = False
@@ -156,12 +179,11 @@ def main():
             for g in opt.param_groups:
                 g["lr"] = lr
 
-            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                loss, logs = train_step(batch, model, packer, normalizer, fnorm,
-                                        loss_fn, forcing_list, rl, device, step)
-                loss = loss / accum
+            # pushforward_step does its own per-step backward (memory-safe).
+            _, logs = pushforward_step(
+                batch, model, packer, normalizer, fnorm, loss_fn, forcing_list,
+                rl, noise, device, step, accum, use_amp, amp_dtype)
 
-            loss.backward()
             if (step + 1) % accum == 0:
                 if tcfg.get("grad_clip"):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg["grad_clip"])

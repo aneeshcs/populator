@@ -65,18 +65,21 @@ def main():
     ds = data_mod.PopLENSDataset(cfg, [member], split="eval", rollout_steps=1)
     t0 = args.t0 if args.t0 is not None else ds.index[len(ds.index) // 2][1]
 
-    # Initial condition and the cyclic month embedding.
+    # Initial condition history (H states ending at t0) and month embedding.
     statevars = d["prognostic"] + d["surface_prognostic"]
+    H = getattr(model, "history", 1)
+    hist = [normalizer.normalize(packer.pack(
+                {v: ds._read_slice(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
+                 for v in statevars})) for h in range(H)]
     ic = {v: ds._read_slice(member, v, t0).unsqueeze(0).to(device) for v in statevars}
     month = t0 % 12
     ang = 2 * np.pi * month / 12.0
     month_emb = torch.tensor([[np.sin(ang), np.cos(ang)]], dtype=torch.float32, device=device)
 
     chan_mask = _chan_mask(packer, grid).to(device)
-    x = normalizer.normalize(packer.pack(ic))
     persistence = {v: ic[v].clone() for v in statevars}
 
-    print(f"[eval] member={member} t0={t0} horizon={horizon} months")
+    print(f"[eval] member={member} t0={t0} horizon={horizon} months history={H}")
     print(f"{'mo':>3} {'var':>5} {'emu_rmse':>10} {'persist_rmse':>12} {'skill':>7}")
     h0 = physics.heat_content(ic["TEMP"], grid)
     s0 = physics.salt_content(ic["SALT"], grid)
@@ -88,7 +91,11 @@ def main():
         ).unsqueeze(0)
         fnz = fnorm.normalize(forcing)
         cond = month_cond(month_emb, fnz)
-        x = model(x, fnz, cond) * chan_mask
+        x_in = hist[-1] if H == 1 else torch.stack(hist, dim=1)
+        x = model(x_in, fnz, cond) * chan_mask
+        hist.append(x)
+        if len(hist) > H:
+            hist.pop(0)
         pred = packer.unpack(normalizer.denormalize(x))
 
         truth = {v: ds._read_slice(member, v, t + 1).unsqueeze(0).to(device)

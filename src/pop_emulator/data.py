@@ -60,7 +60,7 @@ class PopLENSDataset(Dataset):
     """Pairs of (state_t, forcing_t, state_{t+step}) over CESM-LENS members."""
 
     def __init__(self, cfg: dict, members: List[str], split: str = "train",
-                 rollout_steps: int = 1):
+                 rollout_steps: int = 1, history: int = None):
         d = cfg["data"]
         self.root = d["root"]
         self.experiment = d["experiment"]
@@ -70,12 +70,16 @@ class PopLENSDataset(Dataset):
         self.nlev = d["nlev"]
         self.step = d.get("step_months", 1)
         self.rollout = max(1, int(rollout_steps))
+        # Number of input history states (the IC spans t0-(H-1)..t0).
+        self.history = int(cfg.get("model", {}).get("history", 1)
+                           if history is None else history)
         self.members = list(members)
         self.split = split
 
         self._cache: Dict[tuple, object] = {}  # (member, var) -> DataArray
 
-        # Build the global (member, t) sample index, honoring the time window.
+        # Build the global (member, t0) sample index, honoring the time window.
+        # t0 is the most recent input month; need history-1 months before it.
         self.index: List[tuple] = []
         self._ntime: Dict[str, int] = {}
         t_start = d.get("t_start", 0)
@@ -86,7 +90,7 @@ class PopLENSDataset(Dataset):
             nt = da.sizes["time"]
             self._ntime[m] = nt
             hi = nt if t_end in (-1, None) else min(t_end, nt)
-            lo = max(0, t_start)
+            lo = max(self.step * (self.history - 1), t_start)
             for t in range(lo, hi - span):
                 self.index.append((m, t))
 
@@ -108,9 +112,13 @@ class PopLENSDataset(Dataset):
     def __getitem__(self, idx: int):
         member, t = self.index[idx]
         statevars = self.prognostic + self.surface
+        H = self.history
 
-        # Initial condition at t, then `rollout` targets and forcings.
-        state_t = {v: self._read_slice(member, v, t) for v in statevars}
+        # Input history: H states ending at t0 (oldest first), stacked on a new
+        # leading axis. Then `rollout` targets and forcings.
+        state_hist = {v: torch.stack(
+            [self._read_slice(member, v, t - self.step * (H - 1 - h))
+             for h in range(H)], dim=0) for v in statevars}
         targets = {v: torch.stack(
             [self._read_slice(member, v, t + self.step * (s + 1))
              for s in range(self.rollout)], dim=0) for v in statevars}
@@ -124,7 +132,7 @@ class PopLENSDataset(Dataset):
         month_emb = torch.tensor([np.sin(ang), np.cos(ang)], dtype=torch.float32)
 
         return {
-            "state_t": state_t,        # {var: (Z,J,I) or (J,I)}
+            "state_hist": state_hist,  # {var: (H,Z,J,I) or (H,J,I)}
             "targets": targets,        # {var: (R,Z,J,I) or (R,J,I)}
             "forcing": forcing,        # {var: (R,J,I)}
             "month_emb": month_emb,
@@ -140,9 +148,9 @@ def collate(batch: List[dict]) -> dict:
         return {v: torch.stack([b[key][v] for b in batch], dim=0) for v in keys}
 
     return {
-        "state_t": stack_dict("state_t"),   # {var: (B,Z,J,I)/(B,J,I)}
-        "targets": stack_dict("targets"),   # {var: (B,R,Z,J,I)/(B,R,J,I)}
-        "forcing": stack_dict("forcing"),   # {var: (B,R,J,I)}
+        "state_hist": stack_dict("state_hist"),  # {var: (B,H,Z,J,I)/(B,H,J,I)}
+        "targets": stack_dict("targets"),        # {var: (B,R,Z,J,I)/(B,R,J,I)}
+        "forcing": stack_dict("forcing"),        # {var: (B,R,J,I)}
         "month_emb": torch.stack([b["month_emb"] for b in batch], dim=0),
         "member": [b["member"] for b in batch],
         "t": torch.tensor([b["t"] for b in batch]),

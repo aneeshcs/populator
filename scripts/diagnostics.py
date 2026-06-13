@@ -54,17 +54,18 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
     monthly SST (TEMP k=0) and SSH stacked as (T, J, I), plus the achieved
     length (truncated if the rollout goes unstable)."""
     statevars = packer.prognostic + packer.surface
-    ic = {v: ds._read_slice(member, v, t0).unsqueeze(0).to(device) for v in statevars}
+    H = getattr(model, "history", 1)
+    hist = [normalizer.normalize(packer.pack(
+                {v: ds._read_slice(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
+                 for v in statevars})) for h in range(H)]
     month = t0 % 12
     ang = 2 * np.pi * month / 12.0
     month_emb = torch.tensor([[np.sin(ang), np.cos(ang)]], dtype=torch.float32, device=device)
 
     chan_mask = _chan_mask(packer, grid).to(device)
-    x = normalizer.normalize(packer.pack(ic))
     mask2d = grid.mask2d.bool().cpu().numpy()
 
     emu_sst, emu_ssh, pop_sst, pop_ssh = [], [], [], []
-    sst_idx = packer.slices["TEMP"].start  # channel index of TEMP level 0
 
     achieved = 0
     for step in range(months):
@@ -74,7 +75,11 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
         ).unsqueeze(0)
         fnz = fnorm.normalize(forcing)
         cond = month_cond(month_emb, fnz)
-        x = model(x, fnz, cond) * chan_mask
+        x_in = hist[-1] if H == 1 else torch.stack(hist, dim=1)
+        x = model(x_in, fnz, cond) * chan_mask
+        hist.append(x)
+        if len(hist) > H:
+            hist.pop(0)
 
         pred = packer.unpack(normalizer.denormalize(x))
         sst = pred["TEMP"][0, 0].cpu().numpy()

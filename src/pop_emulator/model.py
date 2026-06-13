@@ -150,6 +150,9 @@ class OceanEmulator(nn.Module):
         self.n_state = packer.n_channels
         self.n_forcing = n_forcing
         self.residual = m.get("residual_update", True)
+        # Number of previous states fed as input history (Samudra-style). The
+        # residual update is always applied to the most recent state.
+        self.history = int(m.get("history", 1))
 
         # Static channels: f, mask2d, normalized depth-at-column, sin/cos(lat),
         # sin/cos(lon). Registered as buffers, built lazily on first forward.
@@ -158,7 +161,7 @@ class OceanEmulator(nn.Module):
         self.grid = grid
 
         n_static = 7
-        cin = self.n_state + n_forcing + n_static
+        cin = self.history * self.n_state + n_forcing + n_static
         cond_dim = 2 + n_forcing  # month (sin,cos) + global forcing means
         self.net = OceanUNet(
             cin, self.n_state,
@@ -181,15 +184,33 @@ class OceanEmulator(nn.Module):
         self._static_built = True
 
     def forward(self, x_state_norm: torch.Tensor, forcing_norm: torch.Tensor,
-                cond: torch.Tensor) -> torch.Tensor:
-        """``x_state_norm`` (B, C, J, I), ``forcing_norm`` (B, F, J, I),
-        ``cond`` (B, cond_dim). Returns next-state in normalized space."""
+                cond: torch.Tensor, base: torch.Tensor = None) -> torch.Tensor:
+        """Predict the next normalized state.
+
+        ``x_state_norm`` is either ``(B, C, J, I)`` (single state, history=1) or
+        ``(B, H, C, J, I)`` (a history of H states, oldest first). ``forcing_norm``
+        is ``(B, F, J, I)`` and ``cond`` is ``(B, cond_dim)``. The residual update
+        is applied to ``base`` if given, else to the most recent input state.
+
+        Passing an explicit ``base`` lets the caller feed a *noised* history to
+        the network (input-robustness/denoiser training) while anchoring the
+        residual on the clean state, so injected noise does not leak directly
+        into the output."""
+        if x_state_norm.dim() == 5:
+            B, H, C, J, I = x_state_norm.shape
+            anchor = x_state_norm[:, -1]                     # most recent state
+            state_in = x_state_norm.reshape(B, H * C, J, I)  # oldest..newest
+        else:
+            B = x_state_norm.shape[0]
+            anchor = x_state_norm
+            state_in = x_state_norm
+        if base is None:
+            base = anchor
         if not self._static_built:
-            self._build_static(x_state_norm.device, x_state_norm.dtype)
-        B = x_state_norm.shape[0]
+            self._build_static(state_in.device, state_in.dtype)
         static = self.static_ch.expand(B, -1, -1, -1)
-        inp = torch.cat([x_state_norm, forcing_norm, static], dim=1)
+        inp = torch.cat([state_in, forcing_norm, static], dim=1)
         out = self.net(inp, cond)
         if self.residual:
-            out = x_state_norm + out
+            out = base + out
         return out
