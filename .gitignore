@@ -30,3 +30,9 @@ dist/
 *.o[0-9]*
 *.e[0-9]*
 jobs/logs/
+
+# LaTeX build artifacts
+*.aux
+*.toc
+*.out
+docs/*.log

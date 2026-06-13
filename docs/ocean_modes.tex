@@ -1,0 +1,208 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{siunitx}
+\usepackage[hidelinks]{hyperref}
+\graphicspath{{figures/}}
+
+\title{Modes of Ocean Variability in the POP Ocean Emulator:\\
+A Diagnostic Comparison against CESM--LENS POP2}
+\author{POP Ocean Emulator project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We diagnose the leading modes of ocean variability reproduced by the
+physics--informed ocean emulator and compare them against the parent POP2 model
+(CESM Large Ensemble, member 001, held out from training). The emulator is
+integrated as a free--running, surface--forced rollout from a single POP initial
+condition; at every month it is supplied the same surface fluxes
+(\texttt{SHF}, \texttt{SHF\_QSW}, \texttt{SFWF}, \texttt{TAUX}, \texttt{TAUY})
+that drive POP, and it predicts its own ocean state forward. Over the window in
+which the rollout remains physically stable (\textbf{67 months $\approx$ 5.6
+years}), the emulator reproduces the El Ni\~no--Southern Oscillation (ENSO)
+Ni\~no~3.4 index with correlation $r=0.77$, the North Atlantic SST index with
+$r=0.68$, and the leading North Pacific SST principal component with $r=0.67$.
+The spatial pattern of SST variability is captured in its broad geography, but
+the emulator over--concentrates North Pacific variance into a single, overly
+broad mode, and the free rollout drifts and becomes unstable beyond
+$\sim$5.6~years. These results establish that the emulator has learned
+physically meaningful interannual variability while highlighting long--horizon
+rollout stability as the key remaining challenge.
+\end{abstract}
+
+\section{Method}
+The trained emulator (run~2 checkpoint, 188.9\,M parameters) is initialised from
+the POP state of member~001 at model month $t_0=360$ and stepped forward one
+month at a time. Each step consumes the POP surface forcing for that month and
+the emulator's own previous state, so the comparison isolates how faithfully the
+learned dynamics reproduce the \emph{ocean response} to a common forcing.
+
+Monthly sea surface temperature (SST, the model's top--level \texttt{TEMP}) and
+sea surface height (\texttt{SSH}) are collected for both the emulator and POP
+over the same months. Anomalies are formed by removing the monthly climatology
+(per calendar month) computed over the rollout window; indices are additionally
+linearly detrended. All spatial averages are area--weighted by the POP T--cell
+area \texttt{TAREA} and masked to ocean points. The leading empirical orthogonal
+function (EOF) is obtained from an area--weighted singular value decomposition of
+the anomaly matrix, and its spatial pattern is shown as the regression of SST
+anomalies onto the standardised first principal component (PC1).
+
+\paragraph{Rollout stability.} The free--running rollout was requested for 480
+months (40 years) but became numerically unstable after \textbf{67 months}; all
+diagnostics below therefore use the 5.6--year stable segment. This record length
+is adequate to characterise interannual (ENSO) variability and to display the
+geography of the leading modes, but it is too short for a robust assessment of
+genuinely decadal--to--multidecadal behaviour. We report the Pacific and Atlantic
+patterns as the \emph{leading SST modes over the stable window} rather than as
+fully resolved decadal oscillations, and we treat the 5.6--year stability limit
+itself as a primary diagnostic finding (Sec.~\ref{sec:discussion}).
+
+\begin{table}[t]
+\centering
+\caption{Agreement of emulator modes with POP over the 5.6--year stable rollout.
+$r$ is the temporal correlation of the index/PC; the std.\ ratio is
+emulator/POP standard deviation.}
+\label{tab:scores}
+\begin{tabular}{lccl}
+\toprule
+Mode & $r$ vs POP & std.\ ratio & Notes \\
+\midrule
+Ni\~no 3.4 (ENSO)            & 0.77 & 0.88 & interannual; well captured \\
+N.\ Atlantic SST (AMO--like) & 0.68 & 0.93 & amplitude well matched \\
+N.\ Pacific PC1 (PDO--like)  & 0.67 & --   & PC timing good; pattern too broad \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{El Ni\~no--Southern Oscillation (Ni\~no 3.4)}
+The Ni\~no~3.4 index is the SST anomaly area--averaged over
+\SIrange{5}{5}{\degree} latitude (\ang{5}S--\ang{5}N) and
+\SIrange{170}{120}{\degree}W, the canonical ENSO monitoring region.
+Figure~\ref{fig:nino} shows that the emulator (red) tracks the POP index (black)
+closely throughout the stable window, reproducing the warm events near rollout
+years~0.5 and~1.5 and the sustained cold phase around years~2.5--3.0. The
+correlation is $r=0.77$ and the emulator's variance is 88\% of POP's, i.e.\ it
+slightly underestimates ENSO amplitude but captures its phase and the
+$\sim$2--4~year recurrence well. ENSO is the most robustly resolved mode here
+because its timescale is fully contained within the 5.6--year record.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{nino34.png}
+\caption{Ni\~no~3.4 SST--anomaly index for POP (black) and the emulator (red)
+over the stable forced rollout. Correlation and standard--deviation ratio are
+annotated.}
+\label{fig:nino}
+\end{figure}
+
+\section{Pacific Decadal Oscillation (leading N.\ Pacific SST mode)}
+The PDO is defined as the leading EOF of North Pacific
+(\ang{20}--\ang{70}N, \ang{110}E--\ang{100}W) monthly SST anomalies after
+removal of the global--mean SST anomaly. Figure~\ref{fig:pdo} compares the EOF1
+spatial patterns and Figure~\ref{fig:pdopc} the principal components.
+
+POP exhibits the textbook PDO ``horseshoe'': a cool anomaly in the central/western
+basin near \ang{40}N, \ang{160}E surrounded by warm anomalies along the eastern
+boundary, explaining 28\% of the regional variance. The emulator reproduces the
+\emph{timing} of the leading mode (PC1 correlation $r=0.67$,
+Fig.~\ref{fig:pdopc}) but its spatial pattern is much broader and more
+monopole--like, and its EOF1 accounts for 75\% of the variance---far more than
+POP's 28\%. In other words, the emulator concentrates North Pacific variability
+into a single, spatially smooth basin--scale mode rather than POP's richer
+dipolar structure. This over--smoothing and over--dominance is consistent with
+(i) the short 5.6--year record, in which a basin--wide drift component projects
+strongly onto EOF1, and (ii) the diffusive tendency of the convolutional
+emulator to damp fine--scale gradients.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{pdo_pattern.png}
+\caption{Leading EOF of North Pacific SST anomalies (global mean removed) for POP
+(left) and the emulator (right); colour is the regression of SST anomaly onto the
+standardised PC1. POP shows the classic PDO horseshoe; the emulator's pattern is
+broader and over--dominant (75\% vs 28\% of variance).}
+\label{fig:pdo}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{pdo_pc.png}
+\caption{Standardised first principal component (PC1) of the North Pacific SST
+EOF for POP (black) and the emulator (red); $r=0.67$.}
+\label{fig:pdopc}
+\end{figure}
+
+\section{North Atlantic SST mode (AMO--like)}
+The Atlantic index is the SST anomaly averaged over the North Atlantic
+(\ang{0}--\ang{60}N, \ang{80}W--\ang{0}) with the global--mean SST anomaly
+removed, the standard construction for the Atlantic Multidecadal Oscillation
+(AMO). Over a 5.6--year window this index measures interannual rather than
+multidecadal variability, but it remains a useful test of basin--scale Atlantic
+SST response. Figure~\ref{fig:amo} shows good agreement ($r=0.68$, variance ratio
+0.93): the emulator captures the sign and amplitude of most fluctuations, with
+occasional phase offsets of a few months.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{amo.png}
+\caption{North Atlantic SST--anomaly index (global mean removed) for POP (black)
+and the emulator (red).}
+\label{fig:amo}
+\end{figure}
+
+\section{Geography of SST variability}
+Figure~\ref{fig:sstvar} maps the standard deviation of monthly SST anomalies for
+POP and the emulator, together with the time--mean SST bias. The emulator places
+the maxima of SST variability in the correct locations---the equatorial Pacific
+cold tongue (ENSO), the western boundary currents (Kuroshio, Gulf Stream) and the
+high--latitude frontal zones---confirming that it has learned \emph{where} the
+ocean is most active. The emulator field is visibly smoother and somewhat noisier
+in patches, and the mean SST bias (right panel) is generally small but shows
+structure along the western boundary currents and sea--ice margins where
+gradients are sharpest. (The cross--hatched artefacts at the northern edge are
+the POP tripole grid fold rendered on a regular longitude--latitude mesh, not a
+model feature.)
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{sst_variability.png}
+\caption{Standard deviation of monthly SST anomalies for POP (left) and the
+emulator (centre), and the time--mean SST bias, emulator minus POP (right).}
+\label{fig:sstvar}
+\end{figure}
+
+\section{Discussion and limitations}
+\label{sec:discussion}
+Two messages emerge. First, \textbf{the emulator has learned physically
+meaningful variability}: within its stable window it reproduces ENSO with
+$r=0.77$, the leading North Pacific and North Atlantic SST modes with
+$r\approx0.67$--$0.68$, and the correct geography of SST variance, all while
+conserving heat and salt to within $\sim$0.1\% over the rollout. This is a
+substantial advance over the project's first training run, whose forecasts were
+statistically indistinguishable from persistence.
+
+Second, \textbf{long--horizon rollout stability is the principal open problem}.
+The free--running integration drifts and becomes unstable after $\sim$5.6~years,
+which both limits the present diagnostics to interannual timescales and signals
+error accumulation under autoregressive feedback. The over--dominant, overly
+smooth PDO pattern is a symptom of the same issue: a slowly growing basin--scale
+drift projects onto---and inflates---the leading EOF.
+
+The most promising remedies, in order, are: (i)~\emph{longer multi--step rollout
+training}: the present model reached only 4--step rollout in its final hours, and
+extending the curriculum (8--12 steps) directly penalises the error growth that
+destabilises long rollouts; (ii)~\emph{training on anomalies relative to a
+monthly climatology}, which removes the large persistent mean state that the
+drift rides on; (iii)~\emph{more training data} (additional CESM--LENS members,
+including RCP8.5) for a broader sampling of variability; and (iv)~light
+spectral or gradient regularisation to counter the convolutional smoothing that
+weakens sharp SST fronts. Each of these is a configuration change in the existing
+pipeline. Once a multi--decade rollout is stable, the same diagnostics can be
+re--run to assess genuinely decadal modes (PDO, AMO) on their native timescales.
+
+\end{document}
