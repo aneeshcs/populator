@@ -1,0 +1,34 @@
+#!/bin/bash
+#PBS -N pop_emu_diag
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l select=1:ncpus=8:mem=120GB
+#PBS -l walltime=02:00:00
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/diagnostics.log
+
+# Forced multi-decade rollout + ocean-mode diagnostics (ENSO/PDO/AMO/SST var)
+# comparing the emulator to POP. Writes PNGs to docs/figures for the LaTeX report.
+
+set -e
+module load conda/latest 2>/dev/null || true
+CONDA=/glade/work/acsubram/conda-envs/credit/bin
+REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
+cd $REPO
+mkdir -p jobs/logs docs/figures
+find src -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+export PYTHONDONTWRITEBYTECODE=1
+
+CONFIG=${CONFIG:-configs/run2.yaml}
+CKPT=${CKPT:-checkpoints/run2/last.pt}
+MEMBER=${MEMBER:-001}
+T0=${T0:-360}
+MONTHS=${MONTHS:-480}
+
+echo "Job started: $(date) on $(hostname)"
+echo "config=$CONFIG ckpt=$CKPT member=$MEMBER t0=$T0 months=$MONTHS"
+
+$CONDA/python scripts/diagnostics.py --config "$CONFIG" --checkpoint "$CKPT" \
+    --member "$MEMBER" --t0 "$T0" --months "$MONTHS" --out docs/figures
+
+echo "Job finished: $(date)"
