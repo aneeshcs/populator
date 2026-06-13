@@ -121,9 +121,23 @@ conservation laws, not a generic image regressor.
    per-batch, loader rebuilt on change.
 3. *Persistence collapse*: **tendency-weighted data loss** (see run 2 above).
 
+**Run 3 — RUNNING 2026-06-13 as job 4551769 (stability recipe)**
+- Implements `docs/training_plan.md` items 1-3 (commit d8d2b89): **2-state history**
+  (`model.history=2`), **memory-safe pushforward** (per-step backward on detached
+  self-rollout — long rollouts can't OOM), **input-noise injection** (0.1,
+  denoiser training; residual anchored on a clean `base` so noise doesn't leak
+  into output). All physics constraints kept. Config `configs/run3.yaml`,
+  `ckpt_dir=checkpoints/run3`, curriculum to 16-step, fresh start, 189.1M params.
+- Goal: extend free-rollout stability from run-2's 5.6 yr toward decades. Validate
+  by re-running `jobs/diagnostics.pbs` with `CKPT=checkpoints/run3/last.pt`
+  (achieved stable-month count should jump well past 67) and `jobs/evaluate.pbs`.
+- Gotcha learned: input noise + tendency-weighted loss blows up the loss (~36) if
+  the residual anchors on the *noised* state; anchor on the clean state (model
+  `base=` arg). Eval/diag rollouts now keep an H-state history buffer.
+
 ## Next steps (in order)
 
-Persistence is beaten (run 2). Remaining work, roughly prioritized:
+Persistence is beaten (run 2); run 3 targets long-horizon stability. Remaining:
 1. **Long-lead skill / 24-mo degradation**: train longer (run 2 only reached
    step 31k in 12h because 4-step rollout is 4x cost — resume from
    `checkpoints/run2/last.pt`), and/or extend the rollout curriculum past 4-step.
