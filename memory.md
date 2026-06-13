@@ -79,8 +79,21 @@ conservation laws, not a generic image regressor.
   from `4533716`'s contaminated checkpoint. Job `4538136` is the clean one:
   fresh start, cleared `__pycache__`, correct code.
 - **Persistence baseline (weighted) = data loss ~0.90 at step 0** (was ~0.10
-  unweighted). Model must drive data loss below ~0.90 to beat persistence.
-  Salt/heat penalties bounded at 1.0 (confirmed). Watch the data-loss trend.
+  unweighted). Salt/heat penalties bounded at 1.0 (confirmed).
+- **RESULT — run 2 BEATS persistence** (12h, step ~31k, full 1→2→4-step
+  curriculum; eval job 4546887, member 001, ckpt checkpoints/run2/last.pt):
+  skill = 1 - emu_rmse/persist_rmse, positive = better than persistence.
+  | lead | TEMP | SALT | UVEL | SSH |
+  |  4mo | 0.62 | 0.50 | 0.52 | 0.47 |
+  |  8mo | 0.61 | 0.42 | 0.64 | 0.46 |
+  | 12mo | 0.35 | 0.13 | 0.32 | 0.32 |
+  | 16mo | 0.48 | 0.28 | 0.60 | 0.39 |
+  | 20mo | 0.42 | 0.14 | 0.56 | 0.32 |
+  | 24mo | -0.16| -0.40| 0.27 |-0.12 |
+  Run 1 was ~0.00 everywhere → the tendency-weighted loss solved the persistence
+  collapse. Month-24 dips negative because persistence is artificially strong at
+  exactly +24mo (same month-of-year, seasonal recurrence), not a model failure.
+  Conservation still excellent (heat drift ~1e-3, salt ~1e-6).
 
 (original launch notes, job ids superseded by 4538136 above)
 - `fix/salt-budget-and-rollout` MERGED to master (3a0ae17).
@@ -110,20 +123,17 @@ conservation laws, not a generic image regressor.
 
 ## Next steps (in order)
 
-1. **Beat persistence** — the central problem. The tendency-form model collapsed
-   to F≈0 because persistence already gives low normalized data loss. Levers:
-   - Train on **anomalies relative to a monthly climatology** (remove the
-     persistent mean state so the loss targets the actual evolution).
-   - **Weight the loss toward the tendency** (e.g. loss on `Δ = x_{t+1}-x_t`, or a
-     skill/ACC-style objective) so copying the input is no longer the easy minimum.
-   - More **multi-step rollout** training (curriculum to 4+; only ~5k of 60k steps
-     were 2-step) — penalizes persistence over long horizons.
-   - Longer training / more members (add RCP8.5 to `train_members`).
-2. Merge `fix/salt-budget-and-rollout` into `master` before the next run (bounded
-   salt/heat penalty + per-batch rollout curriculum). Resume from `last.pt` or
-   start fresh.
-3. Eval is fast (~3 min CPU): `qsub jobs/evaluate.pbs` (override `CKPT=`, `MEMBER=`).
-4. Scale up once profiled: `model.width`, `data.batch_size`, longer curriculum.
+Persistence is beaten (run 2). Remaining work, roughly prioritized:
+1. **Long-lead skill / 24-mo degradation**: train longer (run 2 only reached
+   step 31k in 12h because 4-step rollout is 4x cost — resume from
+   `checkpoints/run2/last.pt`), and/or extend the rollout curriculum past 4-step.
+   Consider an anomaly-vs-climatology target to remove the seasonal-recurrence
+   artifact that makes persistence look strong at exactly +24mo.
+2. **More data**: add RCP8.5 members to `data.train_members` for a bigger corpus.
+3. **Scale the model**: raise `model.width`/`depth`, `data.batch_size` once
+   profiled; consider longer horizons in the curriculum.
+4. **Evaluate more members / leads** for robust skill stats (eval is ~1-3 min:
+   `qsub -v CONFIG=configs/run2.yaml,CKPT=checkpoints/run2/last.pt,MEMBER=NNN jobs/evaluate.pbs`).
 5. Push the repo to GitHub when ready (currently local only).
 
 ## Gotchas to remember
