@@ -134,6 +134,20 @@ conservation laws, not a generic image regressor.
 - Gotcha learned: input noise + tendency-weighted loss blows up the loss (~36) if
   the residual anchors on the *noised* state; anchor on the clean state (model
   `base=` arg). Eval/diag rollouts now keep an H-state history buffer.
+- **RESULT — run 3 (job 4551769, completed at 12h walltime, step ~26k; reached
+  2/4/8-step curriculum, did NOT reach 12/16-step). Stayed stable the whole run.**
+  Eval job 4573198, diagnostics 4573199 (ckpt checkpoints/run3/last.pt, member 001):
+  - **Free-rollout stability: 125 mo (10.4 yr)** vs run-2's 67 mo (5.6 yr) — ~2x.
+  - Nino3.4 corr 0.75 / std-ratio 0.95; AMO corr 0.67; **PDO PC1 corr 0.84**
+    (run 2: 0.67); PDO varfrac emu 0.72 vs POP 0.31 (still over-concentrated).
+  - 24-mo skill positive 4-20mo (TEMP 0.29-0.48, UVEL 0.26-0.47, SSH 0.30-0.38);
+    slightly less peaked at short lead than run 2 (stability/sharpness tradeoff),
+    more consistent across leads. Conservation heat ~1e-3, salt ~1e-4.
+  - Takeaway: pushforward+history+noise roughly doubled stable horizon with skill
+    maintained. To go further: RESUME run 3 to reach 12/16-step rollout
+    (`qsub -v CONFIG=configs/run3.yaml,CKPT_DIR=checkpoints/run3 jobs/train.pbs`
+    auto-resumes from checkpoints/run3/last.pt). NB diagnostics figures in
+    docs/figures/ were overwritten with run-3's; run-2 figs are in git history.
 
 ## Next steps (in order)
 

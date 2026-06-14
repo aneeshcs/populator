@@ -1,0 +1,35 @@
+config=configs/run3.yaml checkpoint=checkpoints/run3/last.pt member=001
+[eval] member=001 t0=1115 horizon=24 months history=2
+ mo   var   emu_rmse persist_rmse   skill
+  4  TEMP     0.5491       0.9497   0.422
+  4  SALT     0.1070       0.1342   0.203
+  4  UVEL     3.4675       5.5528   0.376
+  4   SSH     4.8687       7.6929   0.367
+     heat-content drift +2.037e-03 | salt-content drift -8.900e-06
+  8  TEMP     0.6222       1.1888   0.477
+  8  SALT     0.1191       0.1525   0.219
+  8  UVEL     3.7970       7.0962   0.465
+  8   SSH     5.8707       9.5204   0.383
+     heat-content drift -1.021e-03 | salt-content drift -3.920e-05
+ 12  TEMP     0.5844       0.8169   0.285
+ 12  SALT     0.1062       0.1074   0.011
+ 12  UVEL     3.2826       4.4569   0.263
+ 12   SSH     4.6225       7.1402   0.353
+     heat-content drift +2.426e-05 | salt-content drift -5.077e-05
+ 16  TEMP     0.6948       1.1578   0.400
+ 16  SALT     0.1447       0.1606   0.099
+ 16  UVEL     4.7016       7.2906   0.355
+ 16   SSH     5.8614       9.2493   0.366
+     heat-content drift +1.977e-03 | salt-content drift -5.831e-05
+ 20  TEMP     0.7223       1.1630   0.379
+ 20  SALT     0.1532       0.1574   0.026
+ 20  UVEL     3.9954       7.0481   0.433
+ 20   SSH     5.9965       8.5608   0.300
+     heat-content drift -5.769e-04 | salt-content drift -9.097e-05
+ 24  TEMP     0.6536       0.6017  -0.086
+ 24  SALT     0.1522       0.1034  -0.472
+ 24  UVEL     3.1924       4.2388   0.247
+ 24   SSH     5.6556       5.3632  -0.055
+     heat-content drift +6.217e-04 | salt-content drift -1.015e-04
+[eval] done
+Job finished: Sun Jun 14 12:33:57 AM MDT 2026
