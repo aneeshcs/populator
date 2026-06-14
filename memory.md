@@ -149,6 +149,14 @@ conservation laws, not a generic image regressor.
     auto-resumes from checkpoints/run3/last.pt). NB diagnostics figures in
     docs/figures/ were overwritten with run-3's; run-2 figs are in git history.
 
+**Run 3 RESUME — RUNNING 2026-06-14 as job 4573511**
+- Resumed cleanly from checkpoints/run3/last.pt at step 26000 (history=2, pushforward,
+  noise active). Continuing 8-step rollout, advancing to 12-step at step 45k and
+  16-step at 75k. ~step 33k, loss ~1.9, stable, no instability. 12h walltime; at
+  ~0.5 it/s it approaches 12-step near the end — expect to need another resume for
+  16-step. After it finishes, re-run eval + diagnostics on checkpoints/run3/last.pt
+  to measure whether deeper rollout extended the stable horizon past 10.4 yr.
+
 ## Next steps (in order)
 
 Persistence is beaten (run 2); run 3 targets long-horizon stability. Remaining:
