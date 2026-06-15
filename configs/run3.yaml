@@ -64,7 +64,7 @@ train:
   # Long multi-step pushforward (memory-safe: per-step backward on detached
   # self-rollout) is the primary stability lever. Spend most of training at
   # long rollout so the model learns to correct its own accumulated error.
-  rollout_curriculum: [[0, 2], [8000, 4], [20000, 8], [45000, 12], [75000, 16]]
+  rollout_curriculum: [[0, 2], [8000, 4], [20000, 8], [44000, 12], [60000, 16]]
   noise_injection: 0.1         # input-noise (denoiser) training, normalized units
   batch_size: 1                # one global field per sample (memory bound)
   grad_accum: 4
