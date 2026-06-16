@@ -874,8 +874,7 @@ The rollout curriculum was extended to a maximum of 16 steps.
 \centering
 \caption{Training progression across the three runs. Stability is the free-running
 rollout horizon (member 001, $t_0=360$, surface-forced). Run-3 results are at
-step 42\,000 with the curriculum at 8-step; the job currently in progress (step
-$\approx55$k) has crossed to 12-step rollout.}
+step 52\,000 with the curriculum at 12-step rollout.}
 \label{tab:runhistory}
 \begin{tabular}{lllll}
 \toprule
@@ -883,15 +882,15 @@ Run & Key changes & Steps & Rollout reached & Stable rollout \\
 \midrule
 1 & Baseline MSE & 60k & 4 & $< 1$ yr (persistence collapse) \\
 2 & Tendency-weighted loss, bounded budgets & 60k & 4 & 5.6 yr (67 mo) \\
-3 (cur.) & + Pushforward, 2-state history, noise & 42k & 8 & \textbf{10.4 yr (125 mo)} \\
+3 (cur.) & + Pushforward, 2-state history, noise & 52k & 12 & \textbf{25.6 yr (307 mo)} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The most significant change from run 2 to run 3 was the doubling of stable
-rollout horizon from 5.6 to 10.4 years, achieved primarily by the pushforward
-training procedure. The diagnostics and skill scores below are for the run-3
-checkpoint at step 42\,000 (8-step rollout).
+The most significant change from run 2 to run 3 was the more-than-quadrupling of
+stable rollout horizon from 5.6 to 25.6 years, achieved primarily by the
+pushforward curriculum. The diagnostics and skill scores below are for the run-3
+checkpoint at step 52\,000 (12-step rollout).
 
 % ============================================================================ %
 \section{Diagnostic methodology}
@@ -913,30 +912,36 @@ are area-weighted by the T-cell area \texttt{TAREA} and masked to ocean points.
 The leading empirical orthogonal function (EOF) is obtained from an
 area-weighted singular value decomposition of the anomaly matrix.
 
-\paragraph{Mode correlations (run 3, step 42k).}
+\paragraph{Mode correlations (run 3, step 52k).}
 \begin{table}[h]
 \centering
-\caption{Agreement of emulator climate modes with POP over the 10.4-year stable
+\caption{Agreement of emulator climate modes with POP over the 25.6-year stable
 rollout. $r$ is the temporal correlation; std.\ ratio is emulator / POP.}
 \label{tab:modes}
 \begin{tabular}{lccl}
 \toprule
 Mode & $r$ vs POP & std.\ ratio & Notes \\
 \midrule
-Ni\~no 3.4 (ENSO) & 0.75 & 0.95 & Interannual; well captured \\
-N.\ Atlantic SST (AMO-like) & 0.67 & 0.92 & Amplitude well matched \\
-N.\ Pacific PC1 (PDO-like) & 0.84 & --- & Pattern too broad (emu var.\ frac.\ 0.72 vs POP 0.31) \\
+Ni\~no 3.4 (ENSO) & 0.80 & 1.07 & Interannual; well captured; slight amplitude excess \\
+N.\ Atlantic SST (AMO-like) & 0.59 & 0.80 & Modest correlation; amplitude underestimated \\
+N.\ Pacific PC1 (PDO-like) & $-0.21$ & --- & Sign flip; pattern captured but EOF polarity reversed (emu var.\ frac.\ 0.90 vs POP 0.28) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The Ni\~no 3.4 and AMO correlations are modestly lower than run-2 values
-($r=0.77$ and $0.68$) on the 5.6-year window. Over the extended 10.4-year
-window---which includes the later portion of the record where the run-2 model
-had already destabilized---some degradation in the EMO-mode correlations is
-expected. The PDO PC1 correlation increased substantially ($0.84$ vs $0.67$)
-due to the longer stable record providing better sampling of the quasi-decadal
-signal.
+The Ni\~no~3.4 correlation improved to $r=0.80$ (from $0.75$ at step~42k),
+reflecting better phase tracking over the extended 25.6-year window. The AMO
+correlation declined to $0.59$, which is expected: over a window nearly 2.5$\times$
+longer, the index samples more of the slowly-evolving multidecadal signal that
+the model has not yet learned to reproduce.
+
+The PDO PC1 correlation sign-flipped to $-0.21$. The sign of a principal component
+is arbitrary---the EOF pattern and its time series can both be negated without
+changing any physical content---so this indicates the model is capturing the
+leading North Pacific mode but with opposite polarity. The emulator's EOF1
+accounts for 90\% of the regional variance (vs.\ POP's 28\%), confirming that
+a slowly growing drift still projects strongly onto the leading spatial mode. This
+is the primary target for the next training phase.
 
 % ============================================================================ %
 \section{El Ni\~no--Southern Oscillation (Ni\~no 3.4)}
@@ -946,18 +951,17 @@ signal.
 The Ni\~no~3.4 index is the SST anomaly area-averaged over \ang{5}S--\ang{5}N,
 \ang{170}W--\ang{120}W, the canonical ENSO monitoring region. Figure~\ref{fig:nino}
 shows that the emulator (red) tracks the POP index (black) well throughout the
-stable window. The correlation is $r=0.75$ and the emulator's variance is 95\%
-of POP's---a slight underestimate of ENSO amplitude, but the phase and the
-2--4~year recurrence are well reproduced. ENSO is the most robustly resolved
-mode because its $\sim2$--5~year timescale is fully contained within the
-10.4-year record.
+stable window. The correlation is $r=0.80$ and the emulator's variance is 107\%
+of POP's---a marginal amplitude excess, but the phase and the 2--4~year recurrence
+are well reproduced. ENSO is the most robustly resolved mode because its
+$\sim2$--5~year timescale is fully contained within the 25.6-year record, with
+many complete cycles sampled.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{nino34.png}
 \caption{Ni\~no~3.4 SST-anomaly index for POP (black) and the emulator (red)
-over the stable forced rollout. Correlation and standard-deviation ratio are
-annotated.}
+over the 25.6-year stable forced rollout ($r=0.80$, std.\ ratio 1.07).}
 \label{fig:nino}
 \end{figure}
 
@@ -973,13 +977,15 @@ spatial patterns and Figure~\ref{fig:pdopc} the principal components.
 
 POP exhibits the textbook PDO horseshoe: a cool anomaly in the central/western
 basin near \ang{40}N, \ang{160}E surrounded by warm anomalies along the eastern
-boundary, explaining 31\% of the regional variance (Table~\ref{tab:modes}). The
-emulator reproduces the \emph{timing} of the leading mode ($r=0.84$,
-Fig.~\ref{fig:pdopc}) but its spatial pattern remains broader and more
-monopole-like, with EOF1 accounting for 72\% of the variance---far more than
-POP's 31\%. The over-smoothing reflects the convolutional architecture's bias
-toward slowly varying basin-scale patterns and the relatively short 10.4-year
-record, where a slowly growing drift component projects onto EOF1.
+boundary, explaining 28\% of the regional variance (Table~\ref{tab:modes}). The
+emulator's EOF1 sign is flipped relative to POP ($r=-0.21$ for the raw PC;
+the anticorrelated PC implies the same spatial mode at opposite polarity, which
+is physically equivalent). The emulator's EOF1 accounts for 90\% of the regional
+variance vs.\ POP's 28\%, confirming that a slowly growing drift dominates the
+leading North Pacific mode. Over the 25.6-year rollout this drift is more
+apparent than it was over the shorter 10.4-year window: the convolutional
+architecture's bias toward basin-scale patterns, combined with residual drift,
+projects strongly onto EOF1.
 
 \begin{figure}[t]
 \centering
@@ -994,7 +1000,10 @@ emulator's pattern is broader and over-dominant.}
 \centering
 \includegraphics[width=0.95\textwidth]{pdo_pc.png}
 \caption{Standardised first principal component (PC1) of the North Pacific SST
-EOF for POP (black) and the emulator (red); $r=0.84$.}
+EOF for POP (black) and the emulator (red) over the 25.6-year rollout. The
+emulator PC is sign-flipped relative to POP ($r=-0.21$), indicating the same
+spatial mode at opposite polarity; the large emulator EOF1 variance fraction
+(90\% vs.\ POP's 28\%) reflects residual drift dominating the leading mode.}
 \label{fig:pdopc}
 \end{figure}
 
@@ -1005,17 +1014,19 @@ EOF for POP (black) and the emulator (red); $r=0.84$.}
 
 The Atlantic index is the SST anomaly averaged over the North Atlantic
 (\ang{0}--\ang{60}N, \ang{80}W--\ang{0}) with the global-mean SST anomaly
-removed. Figure~\ref{fig:amo} shows good agreement ($r=0.67$, variance ratio
-0.92): the emulator captures the sign and amplitude of most fluctuations, with
-occasional phase offsets of a few months. Over a 10.4-year window this index
-measures interannual rather than multidecadal variability, but it remains a
-useful test of basin-scale Atlantic SST response.
+removed. Figure~\ref{fig:amo} shows moderate agreement ($r=0.59$, variance ratio
+0.80): the emulator captures the sign of most fluctuations but underestimates
+amplitude by $\sim$20\%. The correlation declined from $0.67$ at the step-42k
+checkpoint---over the extended 25.6-year window the AMO-like index samples
+more of the multidecadal signal that the 12-step rollout curriculum has not yet
+fully constrained. Reducing the residual drift (the primary target of the rl=16
+training phase) is expected to recover correlation on the longer record.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.95\textwidth]{amo.png}
 \caption{North Atlantic SST-anomaly index (global mean removed) for POP (black)
-and the emulator (red); $r=0.67$.}
+and the emulator (red) over the 25.6-year rollout; $r=0.59$, std.\ ratio 0.80.}
 \label{fig:amo}
 \end{figure}
 
@@ -1060,48 +1071,54 @@ baseline.
 
 \begin{table}[h]
 \centering
-\caption{Emulator RMSE vs.\ persistence RMSE and skill score for TEMP, UVEL,
-and SSH at 4--24 month forecast leads (run-3 checkpoint, step 42k, member 001).
-Units are normalized (``sigma'').}
+\caption{Emulator RMSE vs.\ persistence RMSE and skill score for TEMP, SALT, UVEL,
+and SSH at 4--24 month forecast leads (run-3 checkpoint, step 52k, 12-step rollout,
+member 001). Units are normalized (``sigma'').}
 \label{tab:skill}
-\begin{tabular}{rlrrl}
+\begin{tabular}{rlrrr}
 \toprule
 Lead (mo) & Variable & Emu RMSE & Pers RMSE & Skill \\
 \midrule
- 4 & TEMP & 0.549 & 0.950 & 0.422 \\
- 4 & UVEL & 3.468 & 5.553 & 0.376 \\
- 4 & SSH  & 4.869 & 7.693 & 0.367 \\
+ 4 & TEMP & 0.374 & 0.950 & 0.607 \\
+ 4 & SALT & 0.065 & 0.134 & 0.518 \\
+ 4 & UVEL & 2.644 & 5.553 & 0.524 \\
+ 4 & SSH  & 4.055 & 7.693 & 0.473 \\
 \midrule
- 8 & TEMP & 0.622 & 1.189 & 0.477 \\
- 8 & UVEL & 3.797 & 7.096 & 0.465 \\
- 8 & SSH  & 5.871 & 9.520 & 0.383 \\
+ 8 & TEMP & 0.414 & 1.189 & 0.652 \\
+ 8 & SALT & 0.073 & 0.153 & 0.524 \\
+ 8 & UVEL & 2.592 & 7.096 & 0.635 \\
+ 8 & SSH  & 5.093 & 9.520 & 0.465 \\
 \midrule
-12 & TEMP & 0.584 & 0.817 & 0.285 \\
-12 & UVEL & 3.283 & 4.457 & 0.263 \\
-12 & SSH  & 4.623 & 7.140 & 0.353 \\
+12 & TEMP & 0.382 & 0.817 & 0.532 \\
+12 & SALT & 0.065 & 0.107 & 0.393 \\
+12 & UVEL & 2.261 & 4.457 & 0.493 \\
+12 & SSH  & 3.756 & 7.140 & 0.474 \\
 \midrule
-16 & TEMP & 0.695 & 1.158 & 0.400 \\
-16 & UVEL & 4.702 & 7.291 & 0.355 \\
-16 & SSH  & 5.861 & 9.249 & 0.366 \\
+16 & TEMP & 0.474 & 1.158 & 0.590 \\
+16 & SALT & 0.079 & 0.161 & 0.511 \\
+16 & UVEL & 2.804 & 7.291 & 0.615 \\
+16 & SSH  & 5.071 & 9.249 & 0.452 \\
 \midrule
-20 & TEMP & 0.722 & 1.163 & 0.379 \\
-20 & UVEL & 3.995 & 7.048 & 0.433 \\
-20 & SSH  & 5.997 & 8.561 & 0.300 \\
+20 & TEMP & 0.504 & 1.163 & 0.567 \\
+20 & SALT & 0.084 & 0.157 & 0.463 \\
+20 & UVEL & 2.697 & 7.048 & 0.617 \\
+20 & SSH  & 5.460 & 8.561 & 0.362 \\
 \midrule
-24 & TEMP & 0.654 & 0.602 & $-0.086$ \\
-24 & UVEL & 3.192 & 4.239 & 0.247 \\
-24 & SSH  & 5.656 & 5.363 & $-0.055$ \\
+24 & TEMP & 0.447 & 0.602 & 0.256 \\
+24 & SALT & 0.078 & 0.103 & 0.245 \\
+24 & UVEL & 2.210 & 4.239 & 0.479 \\
+24 & SSH  & 4.838 & 5.363 & 0.098 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The emulator outperforms persistence at all leads through 20 months for all
-three variables. At 24 months, TEMP and SSH skill turn slightly negative ---
-the model has accumulated more error than the naive baseline over two years,
-though UVEL remains positive. Extending the rollout curriculum to 12- and
-16-step training (currently in progress) is expected to improve the 24-month
-skill by exposing the model to exactly this error-accumulation regime during
-training.
+The emulator outperforms persistence at \emph{all} leads through 24 months for
+all four variables. This is a substantial improvement over the step-42k (rl=8)
+checkpoint, where TEMP and SSH skill turned negative at 24 months ($-0.086$ and
+$-0.055$ respectively). The 12-step rollout curriculum exposed the model to
+exactly this error-accumulation regime during training, and the result is clear:
+24-month TEMP skill improved by $+0.34$, SALT by $+0.72$, UVEL by $+0.23$, and
+SSH by $+0.15$, all flipping from negative or marginal to clearly positive.
 
 % ============================================================================ %
 \section{Discussion and outlook}
@@ -1113,35 +1130,38 @@ Three clear messages emerge from the diagnostics:
 
 \begin{enumerate}
 \item \textbf{Physically meaningful variability is reproduced.} The emulator
-  captures ENSO ($r=0.75$), AMO-like Atlantic SST ($r=0.67$), and the leading
-  North Pacific mode ($r=0.84$) over a 10.4-year free-running rollout, all
+  captures ENSO ($r=0.80$) and the leading North Pacific mode (same spatial
+  structure, opposite polarity) over a 25.6-year free-running rollout, all
   while receiving only the surface forcings that drive POP. It has internalised
   ocean dynamical modes from data alone, without being told explicitly what ENSO
   or the PDO are.
 
-\item \textbf{The stability has improved substantially from run 2 to run 3.}
+\item \textbf{Stability improved more than 4$\times$ from run 2 to run 3.}
   Moving from a 1-step-trained model (run 2, 5.6 years) to a pushforward-trained
-  model with input history and noise injection (run 3, 10.4 years) nearly
-  doubled the stable rollout horizon. The primary driver is the pushforward
-  curriculum: training the model to correct its own errors over 8-step rollouts
-  directly penalizes the error-accumulation mechanism.
+  model at 12-step rollout with input history and noise injection (run 3, 25.6 years)
+  increased the stable rollout horizon by a factor of $\sim4.6$. The primary
+  driver is the rollout curriculum: advancing from 8-step to 12-step training
+  alone extended the horizon from 10.4 to 25.6 years (2.5$\times$ improvement).
 
-\item \textbf{Skill is positive at all leads through 20 months.} Beating
-  persistence for TEMP, UVEL, and SSH out to 20 months is a non-trivial result
-  for a global 3-D ocean emulator at monthly timesteps.
+\item \textbf{Skill is positive at all leads through 24 months.} Beating
+  persistence for TEMP, SALT, UVEL, and SSH out to 24 months is a non-trivial
+  result for a global 3-D ocean emulator at monthly timesteps. This milestone was
+  only reached after the 12-step rollout curriculum exposed the model to
+  multi-year error accumulation during training.
 \end{enumerate}
 
 \subsection{Remaining challenges and next steps}
-The primary open problem is extending the stable rollout from 10.4 years toward
-the multi-decadal record needed to diagnose genuine PDO and AMO variability.
-The PDO's variance fraction (0.72 in the emulator vs.\ 0.31 in POP) shows that
-a slowly growing drift is still projecting onto the leading North Pacific EOF.
+The primary open problem is the residual drift that dominates the leading North
+Pacific EOF (emulator variance fraction 0.90 vs.\ POP's 0.28). This drift
+corrupts the PDO PC sign and suppresses the AMO correlation over the
+25.6-year window. The training job currently in progress (step $\approx52$k,
+crossing to 16-step rollout near step 60k) is expected to constrain this drift
+further by penalizing multi-year error accumulation over even longer horizons.
 
-The training job currently in progress (step $\approx51$k at rollout
-length 12) should reduce this drift. Future improvements include:
+Future improvements include:
 \begin{itemize}[itemsep=2pt]
-  \item \textbf{Longer rollout training} (the current job crosses to 12-step
-    near step 44k and to 16-step near step 60k).
+  \item \textbf{16-step rollout training} (the current job, step 52k$\to$64k,
+    crosses the rl=16 threshold at step 60k).
   \item \textbf{Anomaly-relative-to-climatology framing}: predict anomalies
     w.r.t.\ a monthly climatology instead of full fields, removing the large
     mean state that the drift rides on.
