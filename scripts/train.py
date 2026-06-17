@@ -29,6 +29,7 @@ from pop_emulator.losses import CompositeLoss      # noqa: E402
 from pop_emulator.model import OceanEmulator       # noqa: E402
 from pop_emulator.normalization import (           # noqa: E402
     ForcingNormalizer, Normalizer, StatePacker)
+from pop_emulator import physics as physics_mod    # noqa: E402
 from pop_emulator.rollout import _advance_month_emb, month_cond  # noqa: E402
 from pop_emulator import utils                     # noqa: E402
 
@@ -58,7 +59,7 @@ def pack_forcing(batch_forcing, forcing_list, s, device):
 
 def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
                      forcing_list, rollout_len, noise, device, step, accum,
-                     use_amp, amp_dtype):
+                     use_amp, amp_dtype, grid=None, project=False):
     """Memory-safe pushforward rollout with optional input-noise injection.
 
     The model is unrolled ``rollout_len`` months feeding its own *detached*
@@ -67,6 +68,10 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
     detached, memory stays at one step's graph regardless of rollout length,
     which lets the curriculum go to long rollouts without OOM. All physics
     constraints are applied at every step via ``loss_fn``.
+
+    If ``project=True``, an exact heat+salt conservation projection is applied
+    after every model step (before the data loss and before feeding the next
+    step).  The correction is differentiable, so gradients flow through it.
     """
     statevars = packer.prognostic + packer.surface
     H = model.history
@@ -80,6 +85,7 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
 
     total_val = 0.0
     last_logs = {}
+    proj_diag: dict = {}
     for s in range(rollout_len):
         fnz = fnorm.normalize(pack_forcing(batch["forcing"], forcing_list, s, device))
         cond = month_cond(month_emb, fnz)
@@ -93,6 +99,20 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
 
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             x_next = model(x_in, fnz, cond, base=prev) * chan_mask
+
+        # Conservation projection runs in float32; budget computation uses
+        # .double() internally.  Gradients flow through the uniform correction
+        # (a differentiable global-mean subtraction) back to the model.
+        if project and grid is not None:
+            prev_phys = packer.unpack(normalizer.denormalize(prev.float()))
+            pred_phys = packer.unpack(normalizer.denormalize(x_next.float()))
+            pred_phys, step_proj = physics_mod.conservation_projection(
+                pred_phys, prev_phys, forcing_phys, grid)
+            x_next = normalizer.normalize(packer.pack(pred_phys)) * chan_mask
+            for k, v in step_proj.items():
+                proj_diag[k] = proj_diag.get(k, v.new_zeros(())) + v / rollout_len
+
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             tgt_norm = normalizer.normalize(packer.pack(tgt))
             res = loss_fn(x_next, tgt_norm, prev, forcing_phys=forcing_phys, step=step)
             loss_s = res["loss"] / (rollout_len * accum)
@@ -105,13 +125,17 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
             hist.pop(0)
         month_emb = _advance_month_emb(month_emb)
 
+    last_logs.update(proj_diag)
     return total_val / rollout_len, last_logs
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
-    ap.add_argument("--resume", default=None)
+    ap.add_argument("--resume", default=None,
+                    help="resume from checkpoint (restores model, optimizer, and step)")
+    ap.add_argument("--init-weights", default=None,
+                    help="warm-start model weights only (resets optimizer and step counter)")
     ap.add_argument("--max-steps", type=int, default=None, help="override for testing")
     args = ap.parse_args()
 
@@ -132,7 +156,10 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=False)  # bf16 needs no scaler
 
     step = 0
-    if args.resume and os.path.exists(args.resume):
+    if args.init_weights and os.path.exists(args.init_weights):
+        utils.load_weights_only(args.init_weights, model)
+        print(f"[train] warm-started weights from {args.init_weights} (step=0, fresh optimizer)")
+    elif args.resume and os.path.exists(args.resume):
         step = utils.load_checkpoint(args.resume, model, opt)
         print(f"[train] resumed from {args.resume} at step {step}")
 
@@ -152,9 +179,12 @@ def main():
 
     accum = tcfg.get("grad_accum", 1)
     noise = tcfg.get("noise_injection", 0.0)
+    project = cfg.get("physics", {}).get("conservation_projection", False)
     if model.history > 1 or noise > 0:
         print(f"[train] history={model.history}  noise_injection={noise}  "
               f"(pushforward, per-step backward)")
+    if project:
+        print("[train] conservation projection enabled (exact heat+salt budget closure)")
     t0 = time.time()
     model.train()
     done = False
@@ -182,7 +212,8 @@ def main():
             # pushforward_step does its own per-step backward (memory-safe).
             _, logs = pushforward_step(
                 batch, model, packer, normalizer, fnorm, loss_fn, forcing_list,
-                rl, noise, device, step, accum, use_amp, amp_dtype)
+                rl, noise, device, step, accum, use_amp, amp_dtype,
+                grid=grid, project=project)
 
             if (step + 1) % accum == 0:
                 if tcfg.get("grad_clip"):
@@ -197,6 +228,9 @@ def main():
                 for k in ("continuity", "barotropic", "heat", "salt", "stability"):
                     if k in logs:
                         msg += f" | {k[:4]} {logs[k].item():.3e}"
+                for k in ("proj_delta_T", "proj_delta_S"):
+                    if k in logs:
+                        msg += f" | {k} {logs[k].item():.2e}"
                 msg += f" | {rate:.2f} it/s"
                 print(msg, flush=True)
                 if writer:

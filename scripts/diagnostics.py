@@ -36,6 +36,7 @@ from pop_emulator.grid import load_grid                # noqa: E402
 from pop_emulator.model import OceanEmulator           # noqa: E402
 from pop_emulator.normalization import (               # noqa: E402
     ForcingNormalizer, Normalizer, StatePacker)
+from pop_emulator.physics import conservation_projection  # noqa: E402
 from pop_emulator.rollout import _advance_month_emb, month_cond  # noqa: E402
 from pop_emulator import utils                         # noqa: E402
 
@@ -49,10 +50,14 @@ import matplotlib.pyplot as plt                         # noqa: E402
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
 def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
-                   forcing_list, t0, months, device):
+                   forcing_list, t0, months, device, project=False):
     """Free-running rollout with POP surface forcing. Returns emulator and POP
     monthly SST (TEMP k=0) and SSH stacked as (T, J, I), plus the achieved
-    length (truncated if the rollout goes unstable)."""
+    length (truncated if the rollout goes unstable).
+
+    If ``project=True``, apply exact heat+salt conservation projection at each
+    step to prevent secular budget drift.
+    """
     statevars = packer.prognostic + packer.surface
     H = getattr(model, "history", 1)
     hist = [normalizer.normalize(packer.pack(
@@ -70,13 +75,23 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
     achieved = 0
     for step in range(months):
         t = t0 + step
-        forcing = torch.stack(
-            [ds._read_slice(member, v, t).to(device) for v in forcing_list], dim=0
-        ).unsqueeze(0)
-        fnz = fnorm.normalize(forcing)
+        forcing_phys = {v: ds._read_slice(member, v, t).unsqueeze(0).to(device)
+                        for v in forcing_list}
+        forcing_packed = torch.stack(
+            [forcing_phys[v] for v in forcing_list], dim=1)
+        fnz = fnorm.normalize(forcing_packed)
         cond = month_cond(month_emb, fnz)
         x_in = hist[-1] if H == 1 else torch.stack(hist, dim=1)
+        x_prev = hist[-1]
         x = model(x_in, fnz, cond) * chan_mask
+
+        if project:
+            prev_phys = packer.unpack(normalizer.denormalize(x_prev))
+            pred_phys = packer.unpack(normalizer.denormalize(x))
+            pred_phys, _ = conservation_projection(
+                pred_phys, prev_phys, forcing_phys, grid)
+            x = normalizer.normalize(packer.pack(pred_phys)) * chan_mask
+
         hist.append(x)
         if len(hist) > H:
             hist.pop(0)
@@ -208,6 +223,8 @@ def main():
     ap.add_argument("--t0", type=int, default=360)
     ap.add_argument("--months", type=int, default=480)
     ap.add_argument("--out", default="docs/figures")
+    ap.add_argument("--project", action="store_true",
+                    help="apply exact heat+salt conservation projection at each step")
     args = ap.parse_args()
 
     cfg = utils.load_config(args.config)
@@ -227,10 +244,11 @@ def main():
     ds = data_mod.PopLENSDataset(cfg, [args.member], split="diag", rollout_steps=1)
 
     print(f"[diag] forced rollout: member {args.member}, t0={args.t0}, "
-          f"{args.months} months on {device}")
+          f"{args.months} months on {device}"
+          + (" [conservation projection ON]" if args.project else ""))
     emu_sst, emu_ssh, pop_sst, pop_ssh, n = forced_rollout(
         model, packer, normalizer, fnorm, grid, ds, args.member,
-        forcing_list, args.t0, args.months, device)
+        forcing_list, args.t0, args.months, device, project=args.project)
     print(f"[diag] achieved {n} stable months")
 
     tlon = grid.tlong.cpu().numpy(); tlat = grid.tlat.cpu().numpy()

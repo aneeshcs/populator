@@ -281,3 +281,87 @@ def static_stability_penalty(pred_temp, pred_salt, true_temp, true_salt,
     inst_pred = static_instability(pred_temp, pred_salt, grid)
     inst_true = static_instability(true_temp, true_salt, grid)
     return torch.relu(inst_pred - inst_true).mean()
+
+
+# --------------------------------------------------------------------------- #
+# Conservation projection: exact budget closure at every step.
+# --------------------------------------------------------------------------- #
+def conservation_projection(
+    pred: Dict[str, torch.Tensor],
+    prev: Dict[str, torch.Tensor],
+    forcing: Optional[Dict[str, torch.Tensor]],
+    grid: PopGrid,
+    dt: float = None,
+):
+    """Exactly close the global heat and salt budgets after each model step.
+
+    Computes the residual between the predicted budget change and the
+    surface-flux-implied change, then removes it by adding a spatially uniform
+    offset to every ocean cell.  The correction is differentiable (a global
+    linear reduction + broadcast), so gradients flow through it during training
+    — the model is incentivised to reduce the residual it produces rather than
+    relying on the correction.
+
+    Barotropic (U, V) volume closure requires a Poisson solve on the tripolar
+    grid and is left as a soft penalty in the loss; this function handles the
+    dominant secular drift sources (heat and salt).
+
+    Parameters
+    ----------
+    pred    : predicted physical-unit state dict (TEMP, SALT required)
+    prev    : previous physical-unit state dict
+    forcing : physical-unit surface forcing dict
+              SHF  [W m⁻²], SFWF [kg m⁻² s⁻¹] — omit either to skip that budget
+    grid    : PopGrid (cell volumes, surface areas, ocean constants)
+    dt      : timestep in seconds; defaults to one POP noleap month
+
+    Returns
+    -------
+    corrected : dict with TEMP and SALT replaced by budget-closed versions
+                (all other variables passed through unchanged)
+    diag      : {"proj_delta_T": mean |δT| [°C], "proj_delta_S": mean |δS| [psu]}
+    """
+    from .constants import SECONDS_PER_MONTH
+    dt = SECONDS_PER_MONTH if dt is None else dt
+
+    rho0    = grid.consts.rho_sw * 1.0e3      # g cm⁻³ → kg m⁻³
+    cp      = grid.consts.cp_sw  * 1.0e-4     # erg g⁻¹ K⁻¹ → J kg⁻¹ K⁻¹
+    dV      = _volume_si(grid)                 # (Z, J, I) m³, zero on land
+    V_ocean = (dV * grid.mask3d).sum()         # scalar m³
+    area    = _surface_area_m2(grid)           # (J, I) m², zero on land
+
+    # --- Heat budget ------------------------------------------------------- #
+    dH_pred = (heat_content(pred["TEMP"], grid)
+               - heat_content(prev["TEMP"], grid))                    # (B,) J
+    if forcing is not None and "SHF" in forcing:
+        dH_flux = dt * (forcing["SHF"].double()
+                        * area.unsqueeze(0).double()).flatten(1).sum(1)
+    else:
+        dH_flux = torch.zeros_like(dH_pred)
+
+    # δT [°C]: uniform offset so that ρ₀ cₚ δT V_ocean = −(dH_pred − dH_flux)
+    C_heat  = rho0 * cp * V_ocean                                     # J °C⁻¹
+    delta_T = -(dH_pred - dH_flux).float() / C_heat.float()          # (B,)
+    TEMP_c  = pred["TEMP"] + delta_T.view(-1, 1, 1, 1) * grid.mask3d
+
+    # --- Salt budget ------------------------------------------------------- #
+    dS_pred = (salt_content(pred["SALT"], grid)
+               - salt_content(prev["SALT"], grid))                    # (B,) kg·psu
+    if forcing is not None and "SFWF" in forcing:
+        S_ref   = float(grid.consts.ocn_ref_salinity)
+        dS_flux = dt * (forcing["SFWF"].double() * S_ref
+                        * area.unsqueeze(0).double()).flatten(1).sum(1)
+    else:
+        dS_flux = torch.zeros_like(dS_pred)
+
+    # δS [psu]: uniform offset so that ρ₀ δS V_ocean = −(dS_pred − dS_flux)
+    C_salt  = rho0 * V_ocean                                          # kg·psu psu⁻¹
+    delta_S = -(dS_pred - dS_flux).float() / C_salt.float()          # (B,)
+    SALT_c  = pred["SALT"] + delta_S.view(-1, 1, 1, 1) * grid.mask3d
+
+    corrected = {**pred, "TEMP": TEMP_c, "SALT": SALT_c}
+    diag = {
+        "proj_delta_T": delta_T.abs().mean().detach(),   # mean |δT| [°C]
+        "proj_delta_S": delta_S.abs().mean().detach(),   # mean |δS| [psu]
+    }
+    return corrected, diag

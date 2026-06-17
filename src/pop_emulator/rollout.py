@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+from . import physics
 from .model import OceanEmulator
 from .normalization import ForcingNormalizer, Normalizer, StatePacker
 
@@ -33,8 +34,15 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
             init_state: Dict[str, torch.Tensor],
             forcing_seq: List[Dict[str, torch.Tensor]],
             month_emb0: torch.Tensor,
-            grid, mask_outputs: bool = True) -> List[Dict[str, torch.Tensor]]:
+            grid, mask_outputs: bool = True,
+            project: bool = False) -> List[Dict[str, torch.Tensor]]:
     """Integrate forward ``len(forcing_seq)`` steps.
+
+    Parameters
+    ----------
+    project : if True, apply exact heat/salt conservation projection after each
+              model step.  ``forcing_seq`` must be a list of physical-unit dicts
+              (not pre-packed tensors) so SHF and SFWF are accessible.
 
     Returns the predicted physical-unit states at each step (excluding the
     initial condition).
@@ -50,9 +58,21 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
                             dim=1) if isinstance(forcing, dict) else forcing
         fnz = fnorm.normalize(fpack)
         cond = month_cond(month_emb, fnz)
+        x_prev = x
         x = model(x, fnz, cond)
         if mask_outputs:
             x = x * chan_mask
+
+        if project and isinstance(forcing, dict):
+            forcing_phys = {k: v.to(device) for k, v in forcing.items()}
+            prev_phys = packer.unpack(normalizer.denormalize(x_prev))
+            pred_phys = packer.unpack(normalizer.denormalize(x))
+            pred_phys, _ = physics.conservation_projection(
+                pred_phys, prev_phys, forcing_phys, grid)
+            x = normalizer.normalize(packer.pack(pred_phys))
+            if mask_outputs:
+                x = x * chan_mask
+
         preds.append(packer.unpack(normalizer.denormalize(x)))
         month_emb = _advance_month_emb(month_emb)
 

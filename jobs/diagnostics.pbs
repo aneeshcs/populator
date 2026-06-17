@@ -24,11 +24,15 @@ CKPT=${CKPT:-checkpoints/run2/last.pt}
 MEMBER=${MEMBER:-001}
 T0=${T0:-360}
 MONTHS=${MONTHS:-480}
+PROJECT=${PROJECT:-0}    # set to 1 to enable conservation projection
 
 echo "Job started: $(date) on $(hostname)"
-echo "config=$CONFIG ckpt=$CKPT member=$MEMBER t0=$T0 months=$MONTHS"
+echo "config=$CONFIG ckpt=$CKPT member=$MEMBER t0=$T0 months=$MONTHS project=$PROJECT"
+
+PROJECT_FLAG=""
+[ "$PROJECT" = "1" ] && PROJECT_FLAG="--project"
 
 $CONDA/python scripts/diagnostics.py --config "$CONFIG" --checkpoint "$CKPT" \
-    --member "$MEMBER" --t0 "$T0" --months "$MONTHS" --out docs/figures
+    --member "$MEMBER" --t0 "$T0" --months "$MONTHS" --out docs/figures $PROJECT_FLAG
 
 echo "Job finished: $(date)"

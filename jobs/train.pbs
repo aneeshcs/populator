@@ -30,11 +30,17 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 CONFIG=${CONFIG:-configs/default.yaml}
 CKPT_DIR=${CKPT_DIR:-checkpoints/default}
+INIT_WEIGHTS=${INIT_WEIGHTS:-}    # warm-start weights (first run only; ignored if resume exists)
 echo "config=$CONFIG ckpt_dir=$CKPT_DIR"
 
-RESUME=""
-[ -f "$CKPT_DIR/last.pt" ] && RESUME="--resume $CKPT_DIR/last.pt"
+EXTRA=""
+if [ -f "$CKPT_DIR/last.pt" ]; then
+    EXTRA="--resume $CKPT_DIR/last.pt"
+elif [ -n "$INIT_WEIGHTS" ] && [ -f "$INIT_WEIGHTS" ]; then
+    EXTRA="--init-weights $INIT_WEIGHTS"
+    echo "warm-starting from $INIT_WEIGHTS"
+fi
 
-$CONDA/python scripts/train.py --config "$CONFIG" $RESUME
+$CONDA/python scripts/train.py --config "$CONFIG" $EXTRA
 
 echo "Job finished: $(date)"

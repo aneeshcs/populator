@@ -55,6 +55,16 @@ def load_checkpoint(path: str, model, optimizer=None, scheduler=None,
     return ckpt.get("step", 0)
 
 
+def load_weights_only(path: str, model, map_location="cpu") -> None:
+    """Load model weights from a checkpoint, ignoring optimizer state and step.
+
+    Use this for warm-starting a new run from a previously trained checkpoint
+    when you want a fresh optimizer and step counter (e.g. run3 -> run4).
+    """
+    ckpt = torch.load(path, map_location=map_location)
+    model.load_state_dict(ckpt["model"])
+
+
 def rollout_len_for_step(curriculum, step: int) -> int:
     """Return the rollout length for the current global step from a schedule
     like ``[[0, 1], [40000, 2], [80000, 4]]``."""

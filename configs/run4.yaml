@@ -1,0 +1,87 @@
+# Run 4: conservation projection for long-term stability.
+#
+# Key changes from run3:
+#   - physics.conservation_projection: true  — exact heat+salt budget closure
+#     at every step, both during training and inference.  The soft heat/salt
+#     loss weights are set to 0.0 (redundant with the hard constraint).
+#   - rollout_curriculum extended to rl=32 and rl=64 — the conservation
+#     projection should allow the curriculum to break the 307-month ceiling.
+#   - Warm-started from checkpoints/run3/last.pt via --init-weights flag;
+#     optimizer and step counter reset (lr=5e-5, short warmup).
+
+seed: 0
+
+data:
+  root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+  experiment: B20TRC5CNBDRD
+  grid_member: "001"
+  grid_file: data/grid_gx1v6.nc
+  stats_file: data/stats.nc
+
+  prognostic: [TEMP, SALT, UVEL, VVEL]
+  surface_prognostic: [SSH]
+  forcing: [SHF, SHF_QSW, SFWF, TAUX, TAUY]
+
+  nlev: 60
+  nlat: 384
+  nlon: 320
+
+  train_members: ["002","003","004","005","006","007","008","009","010",
+                  "011","012","013","014","015","016","017","018","019","020"]
+  val_members:   ["001"]
+  test_members:  ["021","022"]
+
+  t_start: 360
+  t_end: -1
+  step_months: 1
+
+normalize:
+  per_level: true
+  tendency_weighted_loss: true
+
+model:
+  arch: spherical_unet
+  width: 96
+  depth: 4
+  blocks_per_stage: 2
+  film_forcing: true
+  residual_update: true
+  history: 2
+
+physics:
+  diagnose_wvel: true
+  barotropic: rigid_lid
+  conservation_projection: true      # hard heat+salt budget closure every step
+  loss_weights:
+    data: 1.0
+    continuity: 0.1                  # keep soft (Poisson projection deferred)
+    barotropic: 0.1                  # keep soft
+    heat: 0.0                        # redundant with hard projection; logged only
+    salt: 0.0                        # redundant with hard projection; logged only
+    stability: 0.02
+    spectral: 0.0
+  physics_warmup_steps: 0            # physics constraints already learned in run3
+
+train:
+  # Warm start: skip early cheap rollout lengths already mastered by run3.
+  # Novel territory is rl=32 and rl=64 where the projection should enable
+  # the emulator to exceed the 307-month ceiling.
+  rollout_curriculum: [[0,8],[2000,12],[8000,16],[20000,32],[40000,64]]
+  noise_injection: 0.1
+  batch_size: 1
+  grad_accum: 4
+  epochs: 50
+  lr: 5.0e-5                         # reduced for warm start
+  weight_decay: 0.05
+  warmup_steps: 200                  # model already converged; minimal warmup
+  amp: true
+  grad_clip: 1.0
+  num_workers: 4
+  ckpt_dir: checkpoints/run4
+  log_dir: runs/run4
+  log_every: 50
+  ckpt_every: 2000
+
+eval:
+  rollout_months: 24
+  reference: persistence
