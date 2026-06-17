@@ -36,3 +36,4 @@ jobs/logs/
 *.toc
 *.out
 docs/*.log
+*.npz

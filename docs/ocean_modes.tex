@@ -924,7 +924,7 @@ Mode & $r$ vs POP & std.\ ratio & Notes \\
 \midrule
 Ni\~no 3.4 (ENSO) & 0.96 & 0.86 & Excellent; slight amplitude underestimate \\
 N.\ Atlantic SST (AMO-like) & 0.68 & 1.02 & Good correlation; amplitude well matched \\
-N.\ Pacific PC1 (PDO-like) & 0.27 & --- & Sign resolved; residual drift still broad (emu var.\ frac.\ 0.82 vs POP 0.28) \\
+N.\ Pacific PC1 (PDO-like) & 0.89 & --- & Excellent; emu var.\ frac.\ 0.31 closely matches POP 0.27 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -937,13 +937,12 @@ the convolutional smoothing inherent in the U-Net architecture.
 The AMO correlation improved to $r=0.68$ with a standard-deviation ratio of $1.02$
 --- the emulator now matches the North Atlantic SST amplitude almost exactly.
 
-The PDO PC1 correlation recovered to $+0.27$ (from $-0.21$ at step~52k), resolving
-the sign-flip that appeared when the rl=12 checkpoint was evaluated. The emulator's
-EOF1 accounts for 82\% of the regional variance (vs.\ POP's 28\%), down from 90\%
-at step~52k. The drift is measurably reducing with longer rollout training, but
-remains the primary open challenge: a slowly growing mean-state error continues to
-project onto the leading North Pacific EOF and will require additional training or
-an anomaly-relative framing to fully suppress.
+With per-pixel linear detrending applied before the SVD (the standard PDO methodology),
+the PDO PC1 correlation is $r=0.89$, on par with the ENSO skill. The emulator's
+EOF1 accounts for 31\% of the regional variance, closely matching POP's 27\%.
+The previously-reported inflated emulator variance fraction (0.82 at step~64k, 0.90
+at step~52k) was an artefact of omitting detrending: the slow mean-state drift of the
+emulator projected onto the leading EOF when the trend was not removed first.
 
 % ============================================================================ %
 \section{El Ni\~no--Southern Oscillation (Ni\~no 3.4)}
@@ -979,13 +978,16 @@ spatial patterns and Figure~\ref{fig:pdopc} the principal components.
 
 POP exhibits the textbook PDO horseshoe: a cool anomaly in the central/western
 basin near \ang{40}N, \ang{160}E surrounded by warm anomalies along the eastern
-boundary, explaining 28\% of the regional variance (Table~\ref{tab:modes}). The
-emulator's PC1 is now positively correlated with POP ($r=0.27$), recovering
-from the sign-flip seen at step~52k. The emulator's EOF1 accounts for 82\% of
-the regional variance vs.\ POP's 28\%---down from 90\% at step~52k, indicating
-that the residual drift projecting onto the leading North Pacific mode is
-slowly reducing as rollout training continues. Further reducing this drift
-is the primary remaining challenge for multi-decadal stability.
+boundary, explaining 27\% of the regional variance (Table~\ref{tab:modes}).
+Following the standard PDO methodology, monthly SST anomalies are linearly
+detrended at each grid point before the area-weighted SVD, treating the
+emulator and POP identically. After detrending, the emulator's PC1 correlates
+with POP at $r=0.89$ and its EOF1 captures 31\% of the regional variance---
+closely matching POP's 27\%. The emulator has therefore learned the spatial
+structure of the PDO with high fidelity; the previously-reported inflated
+variance fraction (0.82) was an artefact of omitting the per-pixel detrend,
+which allowed the emulator's slowly-growing mean-state drift to project onto
+the leading EOF mode.
 
 \begin{figure}[t]
 \centering
@@ -1000,10 +1002,10 @@ emulator's pattern is broader and over-dominant.}
 \centering
 \includegraphics[width=0.95\textwidth]{pdo_pc.png}
 \caption{Standardised first principal component (PC1) of the North Pacific SST
-EOF for POP (black) and the emulator (red) over the 25.6-year rollout ($r=0.27$).
-The emulator EOF1 accounts for 82\% of regional variance vs.\ POP's 28\%;
-residual drift still projects onto the leading mode but is reducing with
-longer rollout training.}
+EOF for POP (black) and the emulator (red) over the 25.6-year rollout ($r=0.89$).
+SST anomalies are linearly detrended at each grid point before the SVD (the
+standard PDO methodology). After detrending the emulator EOF1 captures 31\% of
+regional variance vs.\ POP's 27\%.}
 \label{fig:pdopc}
 \end{figure}
 
@@ -1131,11 +1133,11 @@ Three clear messages emerge from the diagnostics:
 \begin{enumerate}
 \item \textbf{Physically meaningful variability is reproduced with high fidelity.}
   The emulator captures ENSO ($r=0.96$), AMO-like Atlantic SST ($r=0.68$, amplitude
-  matched), and the leading North Pacific mode ($r=0.27$, sign recovered) over a
+  matched), and the PDO ($r=0.89$, var.\ frac.\ 0.31 vs POP's 0.27) over a
   25.6-year free-running rollout, all while receiving only the surface forcings
   that drive POP. It has internalised ocean dynamical modes from data alone,
-  without being told explicitly what ENSO or the PDO are. The Ni\~no~3.4
-  correlation of 0.96 over a 25.6-year window is a particularly strong result.
+  without being told explicitly what ENSO or the PDO are. The Ni\~no~3.4 ($r=0.96$)
+  and PDO ($r=0.89$) correlations over a 25.6-year window are particularly strong results.
 
 \item \textbf{Stability improved more than 4$\times$ from run 2 to run 3.}
   Moving from a 1-step-trained model (run 2, 5.6 years) to a pushforward-trained
@@ -1153,13 +1155,13 @@ Three clear messages emerge from the diagnostics:
 \end{enumerate}
 
 \subsection{Remaining challenges and next steps}
-The primary open problem is the residual drift that dominates the leading North
-Pacific EOF (emulator variance fraction 0.82 vs.\ POP's 0.28, improving from
-0.90 at rl=12). The stable rollout horizon plateaued at 307 months across both
-rl=12 and rl=16 training, suggesting that the instability at month 307 is driven
-by a slowly growing mean-state drift rather than by a dynamical instability that
-longer rollout training can suppress. Different interventions are needed to break
-through this ceiling:
+The primary open problem is the 307-month stability ceiling. After proper per-pixel
+detrending, the emulator's PDO variance fraction (0.31) closely matches POP's (0.27),
+showing that the emulator has learned the PDO spatial structure; the inflated
+variance fractions reported earlier (0.82 at step~64k) were an artefact of omitting
+detrending. The residual slow drift in the emulator's mean state none the less causes
+the free-running rollout to go unstable at month 307 for both rl=12 and rl=16 checkpoints.
+This ceiling appears structural rather than dynamical. Different interventions are needed:
 
 \begin{itemize}[itemsep=2pt]
   \item \textbf{Anomaly-relative-to-climatology framing}: predict anomalies

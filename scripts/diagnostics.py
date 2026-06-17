@@ -144,11 +144,16 @@ def linear_detrend(x):
 
 def eof1(anom, mask, area):
     """Leading EOF over a region. Returns (pattern[J,I], pc[T], varfrac).
-    Anomalies are area-weighted (sqrt) before SVD; pattern is the regression of
-    SST anomalies onto the standardized PC1 (units degC)."""
+    Each pixel is linearly detrended and demeaned before area-weighted SVD;
+    pattern is the regression of SST anomalies onto the standardized PC1 (degC)."""
     idx = np.where(mask.ravel())[0]
     A = anom.reshape(anom.shape[0], -1)[:, idx]          # (T, P)
-    A = A - A.mean(0, keepdims=True)
+    # Per-pixel linear detrend (removes mean and trend)
+    t = np.arange(A.shape[0], dtype=float)
+    t -= t.mean()
+    X = np.column_stack([t, np.ones(len(t))])             # (T, 2)
+    coeffs = np.linalg.lstsq(X, A, rcond=None)[0]        # (2, P)
+    A = A - X @ coeffs
     wsqrt = np.sqrt((area.ravel()[idx]).clip(min=0))
     Aw = A * wsqrt[None]
     U, S, Vt = np.linalg.svd(Aw, full_matrices=False)
@@ -306,7 +311,8 @@ def main():
 
     np.savez(f"{args.out}/diag_indices.npz",
              years=years, nino_emu=e, nino_pop=p,
-             pc_pop=pc_pop, pc_emu=pc_emu, results=str(results), n=n)
+             pc_pop=pc_pop, pc_emu=pc_emu, results=str(results), n=n,
+             emu_sst=emu_sst, pop_sst=pop_sst)
 
     # Summary for the LaTeX text.
     with open(f"{args.out}/diag_summary.txt", "w") as f:
