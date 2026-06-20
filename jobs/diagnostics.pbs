@@ -25,14 +25,17 @@ MEMBER=${MEMBER:-001}
 T0=${T0:-360}
 MONTHS=${MONTHS:-480}
 PROJECT=${PROJECT:-0}    # set to 1 to enable conservation projection
+OUT=${OUT:-docs/figures}  # output directory for figures and summary
 
 echo "Job started: $(date) on $(hostname)"
-echo "config=$CONFIG ckpt=$CKPT member=$MEMBER t0=$T0 months=$MONTHS project=$PROJECT"
+echo "config=$CONFIG ckpt=$CKPT member=$MEMBER t0=$T0 months=$MONTHS project=$PROJECT out=$OUT"
+
+mkdir -p "$OUT"
 
 PROJECT_FLAG=""
 [ "$PROJECT" = "1" ] && PROJECT_FLAG="--project"
 
 $CONDA/python scripts/diagnostics.py --config "$CONFIG" --checkpoint "$CKPT" \
-    --member "$MEMBER" --t0 "$T0" --months "$MONTHS" --out docs/figures $PROJECT_FLAG
+    --member "$MEMBER" --t0 "$T0" --months "$MONTHS" --out "$OUT" $PROJECT_FLAG
 
 echo "Job finished: $(date)"
