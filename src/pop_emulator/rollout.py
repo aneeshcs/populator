@@ -35,14 +35,18 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
             forcing_seq: List[Dict[str, torch.Tensor]],
             month_emb0: torch.Tensor,
             grid, mask_outputs: bool = True,
-            project: bool = False) -> List[Dict[str, torch.Tensor]]:
+            project: bool = False,
+            baro_project: bool = False,
+            baro_n_iter: int = 20) -> List[Dict[str, torch.Tensor]]:
     """Integrate forward ``len(forcing_seq)`` steps.
 
     Parameters
     ----------
-    project : if True, apply exact heat/salt conservation projection after each
-              model step.  ``forcing_seq`` must be a list of physical-unit dicts
-              (not pre-packed tensors) so SHF and SFWF are accessible.
+    project      : apply exact heat/salt conservation projection after each step.
+                   ``forcing_seq`` must be physical-unit dicts so SHF/SFWF are
+                   accessible.
+    baro_project : additionally apply barotropic Poisson projection to remove
+                   depth-integrated velocity divergence.
 
     Returns the predicted physical-unit states at each step (excluding the
     initial condition).
@@ -63,12 +67,16 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
         if mask_outputs:
             x = x * chan_mask
 
-        if project and isinstance(forcing, dict):
+        if (project or baro_project) and isinstance(forcing, dict):
             forcing_phys = {k: v.to(device) for k, v in forcing.items()}
             prev_phys = packer.unpack(normalizer.denormalize(x_prev))
             pred_phys = packer.unpack(normalizer.denormalize(x))
-            pred_phys, _ = physics.conservation_projection(
-                pred_phys, prev_phys, forcing_phys, grid)
+            if project:
+                pred_phys, _ = physics.conservation_projection(
+                    pred_phys, prev_phys, forcing_phys, grid)
+            if baro_project:
+                pred_phys, _ = physics.barotropic_projection(
+                    pred_phys, grid, n_iter=baro_n_iter)
             x = normalizer.normalize(packer.pack(pred_phys))
             if mask_outputs:
                 x = x * chan_mask

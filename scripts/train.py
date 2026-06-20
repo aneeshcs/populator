@@ -59,7 +59,8 @@ def pack_forcing(batch_forcing, forcing_list, s, device):
 
 def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
                      forcing_list, rollout_len, noise, device, step, accum,
-                     use_amp, amp_dtype, grid=None, project=False):
+                     use_amp, amp_dtype, grid=None, project=False,
+                     baro_project=False, baro_n_iter=20):
     """Memory-safe pushforward rollout with optional input-noise injection.
 
     The model is unrolled ``rollout_len`` months feeding its own *detached*
@@ -70,8 +71,9 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
     constraints are applied at every step via ``loss_fn``.
 
     If ``project=True``, an exact heat+salt conservation projection is applied
-    after every model step (before the data loss and before feeding the next
-    step).  The correction is differentiable, so gradients flow through it.
+    after every model step.  If ``baro_project=True``, a Jacobi Poisson solve
+    additionally removes the barotropic velocity divergence.  Both corrections
+    are differentiable so gradients flow through them.
     """
     statevars = packer.prognostic + packer.surface
     H = model.history
@@ -103,14 +105,20 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
         # Conservation projection runs in float32; budget computation uses
         # .double() internally.  Gradients flow through the uniform correction
         # (a differentiable global-mean subtraction) back to the model.
-        if project and grid is not None:
+        if (project or baro_project) and grid is not None:
             prev_phys = packer.unpack(normalizer.denormalize(prev.float()))
             pred_phys = packer.unpack(normalizer.denormalize(x_next.float()))
-            pred_phys, step_proj = physics_mod.conservation_projection(
-                pred_phys, prev_phys, forcing_phys, grid)
+            if project:
+                pred_phys, step_proj = physics_mod.conservation_projection(
+                    pred_phys, prev_phys, forcing_phys, grid)
+                for k, v in step_proj.items():
+                    proj_diag[k] = proj_diag.get(k, v.new_zeros(())) + v / rollout_len
+            if baro_project:
+                pred_phys, baro_diag = physics_mod.barotropic_projection(
+                    pred_phys, grid, n_iter=baro_n_iter)
+                for k, v in baro_diag.items():
+                    proj_diag[k] = proj_diag.get(k, v.new_zeros(())) + v / rollout_len
             x_next = normalizer.normalize(packer.pack(pred_phys)) * chan_mask
-            for k, v in step_proj.items():
-                proj_diag[k] = proj_diag.get(k, v.new_zeros(())) + v / rollout_len
 
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             tgt_norm = normalizer.normalize(packer.pack(tgt))
@@ -179,12 +187,16 @@ def main():
 
     accum = tcfg.get("grad_accum", 1)
     noise = tcfg.get("noise_injection", 0.0)
-    project = cfg.get("physics", {}).get("conservation_projection", False)
+    project      = cfg.get("physics", {}).get("conservation_projection", False)
+    baro_project = cfg.get("physics", {}).get("barotropic_projection", False)
+    baro_n_iter  = cfg.get("physics", {}).get("barotropic_n_iter", 20)
     if model.history > 1 or noise > 0:
         print(f"[train] history={model.history}  noise_injection={noise}  "
               f"(pushforward, per-step backward)")
     if project:
         print("[train] conservation projection enabled (exact heat+salt budget closure)")
+    if baro_project:
+        print(f"[train] barotropic projection enabled (Jacobi Poisson, {baro_n_iter} iters)")
     t0 = time.time()
     model.train()
     done = False
@@ -213,7 +225,8 @@ def main():
             _, logs = pushforward_step(
                 batch, model, packer, normalizer, fnorm, loss_fn, forcing_list,
                 rl, noise, device, step, accum, use_amp, amp_dtype,
-                grid=grid, project=project)
+                grid=grid, project=project,
+                baro_project=baro_project, baro_n_iter=baro_n_iter)
 
             if (step + 1) % accum == 0:
                 if tcfg.get("grad_clip"):
@@ -228,7 +241,8 @@ def main():
                 for k in ("continuity", "barotropic", "heat", "salt", "stability"):
                     if k in logs:
                         msg += f" | {k[:4]} {logs[k].item():.3e}"
-                for k in ("proj_delta_T", "proj_delta_S"):
+                for k in ("proj_delta_T", "proj_delta_S",
+                          "proj_D_bar_before", "proj_D_bar_after", "spectral"):
                     if k in logs:
                         msg += f" | {k} {logs[k].item():.2e}"
                 msg += f" | {rate:.2f} it/s"

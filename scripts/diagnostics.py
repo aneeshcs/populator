@@ -36,7 +36,7 @@ from pop_emulator.grid import load_grid                # noqa: E402
 from pop_emulator.model import OceanEmulator           # noqa: E402
 from pop_emulator.normalization import (               # noqa: E402
     ForcingNormalizer, Normalizer, StatePacker)
-from pop_emulator.physics import conservation_projection  # noqa: E402
+from pop_emulator.physics import conservation_projection, barotropic_projection  # noqa: E402
 from pop_emulator.rollout import _advance_month_emb, month_cond  # noqa: E402
 from pop_emulator import utils                         # noqa: E402
 
@@ -50,7 +50,8 @@ import matplotlib.pyplot as plt                         # noqa: E402
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
 def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
-                   forcing_list, t0, months, device, project=False):
+                   forcing_list, t0, months, device, project=False,
+                   baro_project=False, baro_n_iter=20):
     """Free-running rollout with POP surface forcing. Returns emulator and POP
     monthly SST (TEMP k=0) and SSH stacked as (T, J, I), plus the achieved
     length (truncated if the rollout goes unstable).
@@ -85,11 +86,15 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
         x_prev = hist[-1]
         x = model(x_in, fnz, cond) * chan_mask
 
-        if project:
+        if project or baro_project:
             prev_phys = packer.unpack(normalizer.denormalize(x_prev))
             pred_phys = packer.unpack(normalizer.denormalize(x))
-            pred_phys, _ = conservation_projection(
-                pred_phys, prev_phys, forcing_phys, grid)
+            if project:
+                pred_phys, _ = conservation_projection(
+                    pred_phys, prev_phys, forcing_phys, grid)
+            if baro_project:
+                pred_phys, _ = barotropic_projection(
+                    pred_phys, grid, n_iter=baro_n_iter)
             x = normalizer.normalize(packer.pack(pred_phys)) * chan_mask
 
         hist.append(x)
@@ -225,6 +230,10 @@ def main():
     ap.add_argument("--out", default="docs/figures")
     ap.add_argument("--project", action="store_true",
                     help="apply exact heat+salt conservation projection at each step")
+    ap.add_argument("--baro-project", action="store_true",
+                    help="apply barotropic Poisson projection to remove velocity divergence")
+    ap.add_argument("--baro-n-iter", type=int, default=20,
+                    help="Jacobi iterations for barotropic projection (default 20)")
     args = ap.parse_args()
 
     cfg = utils.load_config(args.config)
@@ -243,12 +252,19 @@ def main():
 
     ds = data_mod.PopLENSDataset(cfg, [args.member], split="diag", rollout_steps=1)
 
+    proj_labels = []
+    if args.project:
+        proj_labels.append("conservation projection ON")
+    if args.baro_project:
+        proj_labels.append(f"barotropic projection ON ({args.baro_n_iter} iters)")
     print(f"[diag] forced rollout: member {args.member}, t0={args.t0}, "
           f"{args.months} months on {device}"
-          + (" [conservation projection ON]" if args.project else ""))
+          + (f" [{', '.join(proj_labels)}]" if proj_labels else ""))
     emu_sst, emu_ssh, pop_sst, pop_ssh, n = forced_rollout(
         model, packer, normalizer, fnorm, grid, ds, args.member,
-        forcing_list, args.t0, args.months, device, project=args.project)
+        forcing_list, args.t0, args.months, device,
+        project=args.project,
+        baro_project=args.baro_project, baro_n_iter=args.baro_n_iter)
     print(f"[diag] achieved {n} stable months")
 
     tlon = grid.tlong.cpu().numpy(); tlat = grid.tlat.cpu().numpy()

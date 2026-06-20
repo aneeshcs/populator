@@ -15,7 +15,7 @@ static_stability_penalty   discourages spurious gravitational instability.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -302,9 +302,9 @@ def conservation_projection(
     — the model is incentivised to reduce the residual it produces rather than
     relying on the correction.
 
-    Barotropic (U, V) volume closure requires a Poisson solve on the tripolar
-    grid and is left as a soft penalty in the loss; this function handles the
-    dominant secular drift sources (heat and salt).
+    Barotropic (U, V) volume closure is handled separately by
+    :func:`barotropic_projection`; this function handles the dominant secular
+    drift sources (heat and salt).
 
     Parameters
     ----------
@@ -365,3 +365,147 @@ def conservation_projection(
         "proj_delta_S": delta_S.abs().mean().detach(),   # mean |δS| [psu]
     }
     return corrected, diag
+
+
+# --------------------------------------------------------------------------- #
+# Barotropic projection: remove depth-integrated divergence via Poisson solve.
+# --------------------------------------------------------------------------- #
+def barotropic_projection(
+    pred: Dict[str, torch.Tensor],
+    grid: PopGrid,
+    n_iter: int = 20,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    """Exactly close the barotropic (depth-integrated) volume budget.
+
+    Solves the variable-coefficient Poisson equation ∇·(H ∇φ) = D, where
+    D = Σ_k dz_k ∇_h·u_k is the barotropic divergence and H(j,i) is the
+    column depth, using Jacobi iteration on the gx1v6 B-grid.  The resulting
+    velocity potential φ gives a depth-uniform correction
+    u_corr = ∂φ/∂x, v_corr = ∂φ/∂y [cm/s] that is subtracted from every
+    level.  The correction is differentiable so gradients flow back to the
+    model through all Jacobi iterations, incentivising the model to produce
+    lower barotropic divergence over training.
+
+    This is the velocity analog of :func:`conservation_projection` for T/S.
+
+    Parameters
+    ----------
+    pred   : state dict with UVEL (B,Z,J,I) and VVEL (B,Z,J,I), physical units
+    grid   : PopGrid
+    n_iter : Jacobi iterations; 20 reduces barotropic divergence by ~10–100×
+
+    Returns
+    -------
+    corrected : dict with UVEL and VVEL replaced; other fields unchanged
+    diag      : {"proj_D_bar_before": mean |D| before [cm/s],
+                 "proj_D_bar_after":  mean |D| after  [cm/s]}
+    """
+    from .grid import shift_i, shift_j
+
+    U = pred["UVEL"].float()    # (B, Z, J, I)
+    V = pred["VVEL"].float()
+
+    # Barotropic divergence D(j,i) [cm/s] at T-points.
+    D = grid.barotropic_divergence(U, V)                    # (B, J, I)
+
+    # Column depth H(j,i) [cm] (zero on land).
+    H = (grid.dz.view(-1, 1, 1) * grid.mask3d).sum(dim=0)  # (J, I)
+
+    # Face-averaged H with land-sea masking → zero-flux BC at coastlines.
+    # Multiplying by both sides' mask2d zeroes the face if either cell is land.
+    H_e = 0.5 * (H + shift_i(H, -1)) * grid.mask2d * shift_i(grid.mask2d, -1)
+    H_w = 0.5 * (H + shift_i(H, +1)) * grid.mask2d * shift_i(grid.mask2d, +1)
+    H_n = 0.5 * (H + shift_j(H, -1)) * grid.mask2d * shift_j(grid.mask2d, -1)
+    H_s = 0.5 * (H + shift_j(H, +1)) * grid.mask2d * shift_j(grid.mask2d, +1)
+
+    hte = grid.hte                  # east-edge length of T-cell [cm], (J, I)
+    htn = grid.htn                  # north-edge length of T-cell [cm]
+    hte_w = shift_i(hte, +1)        # east-edge of west neighbour
+    htn_w = shift_i(htn, +1)        # north-edge of west neighbour
+    htn_s = shift_j(htn, +1)        # north-edge of south neighbour
+    hte_s = shift_j(hte, +1)        # east-edge of south neighbour
+
+    eps = 1e-10  # guard against zero-length edges on degenerate land cells
+
+    # Stencil coefficients [cm] for the variable-coefficient Poisson equation.
+    # c_e = H_e * hte / htn corresponds to H * (face_length / cell_width) in the
+    # i-direction; similarly for the other three faces.  Units: cm·cm/cm = cm.
+    c_e = H_e * hte / htn.clamp_min(eps)
+    c_w = H_w * hte_w / htn_w.clamp_min(eps)
+    c_n = H_n * htn / hte.clamp_min(eps)
+    c_s = H_s * htn_s / hte_s.clamp_min(eps)
+    D_coeff = (c_e + c_w + c_n + c_s).clamp_min(eps)   # diagonal [cm]
+
+    tarea   = grid.tarea      # (J, I) [cm²]
+    mask2d  = grid.mask2d     # (J, I)
+
+    # Jacobi relaxation.  φ [cm²/s] = ∫ u dx (velocity potential).
+    # Each iteration: φ_new[j,i] = (Σ_nbr c_nbr φ_nbr - D * tarea) / D_coeff
+    phi = torch.zeros_like(D)   # (B, J, I)
+    for _ in range(n_iter):
+        phi = (shift_i(phi, -1) * c_e + shift_i(phi, +1) * c_w
+               + shift_j(phi, -1) * c_n + shift_j(phi, +1) * c_s
+               - D * tarea) / D_coeff
+        phi = phi * mask2d      # Dirichlet BC: φ=0 on land
+
+    # Gradient of φ → depth-uniform correction velocities [cm/s].
+    # ∂φ/∂x ≈ (φ[j,i+1] − φ[j,i]) / htn[j,i]  (east-face, i-direction)
+    # ∂φ/∂y ≈ (φ[j+1,i] − φ[j,i]) / hte[j,i]  (north-face, j-direction)
+    dphi_i = (shift_i(phi, -1) - phi) / htn.clamp_min(eps) * mask2d
+    dphi_j = (shift_j(phi, -1) - phi) / hte.clamp_min(eps) * mask2d
+
+    # Subtract correction from every level (broadcast J,I → Z,J,I).
+    mask3d = grid.mask3d.unsqueeze(0)   # (1, Z, J, I)
+    U_c = U - dphi_i.unsqueeze(1) * mask3d
+    V_c = V - dphi_j.unsqueeze(1) * mask3d
+
+    D_after = grid.barotropic_divergence(U_c, V_c)
+    diag = {
+        "proj_D_bar_before": (D.abs() * mask2d).mean().detach(),
+        "proj_D_bar_after":  (D_after.abs() * mask2d).mean().detach(),
+    }
+    corrected = {**pred,
+                 "UVEL": U_c.to(pred["UVEL"].dtype),
+                 "VVEL": V_c.to(pred["VVEL"].dtype)}
+    return corrected, diag
+
+
+# --------------------------------------------------------------------------- #
+# Spectral regularization: penalise high-wavenumber kinetic energy.
+# --------------------------------------------------------------------------- #
+def spectral_penalty(
+    u: torch.Tensor,
+    v: torch.Tensor,
+    grid: PopGrid,
+    n_cutoff: int = 60,
+) -> torch.Tensor:
+    """Fraction of kinetic energy power in wavenumbers above ``n_cutoff``.
+
+    Depth-averages UVEL/VVEL, zeroes land cells, then computes the 2-D FFT.
+    Returns the ratio (high-k power) / (total power), which is dimensionless
+    and O(1) before training reduces grid-scale noise.  Multiply by a small
+    weight (e.g. 0.005) and add to the loss to suppress accumulation of
+    spurious short-scale kinetic energy over long rollouts.
+
+    Parameters
+    ----------
+    u, v     : (B, Z, J, I) velocity fields [physical units, float32 or bf16]
+    n_cutoff : wavenumber threshold; modes with total wavenumber > n_cutoff
+               are penalised (default 60 ≈ λ < 5 grid cells on nlon=320).
+    """
+    u_m = u.float().mean(dim=1) * grid.mask2d   # (B, J, I) depth-mean, land→0
+    v_m = v.float().mean(dim=1) * grid.mask2d
+
+    U = torch.fft.rfft2(u_m)   # (B, J, nlon//2+1) complex
+    V = torch.fft.rfft2(v_m)
+
+    J, I_r = U.shape[-2], U.shape[-1]
+    ki = torch.arange(I_r, device=u.device, dtype=torch.float32)
+    kj = torch.fft.fftfreq(J, device=u.device, dtype=torch.float32) * J
+    k_tot = (ki[None, :] ** 2 + kj[:, None] ** 2).sqrt()   # (J, I_r)
+    hk = (k_tot > n_cutoff).float()
+
+    power    = U.abs() ** 2 + V.abs() ** 2         # (B, J, I_r) real
+    power_hi = (power * hk).mean()
+    power_tot = power.mean()
+    return power_hi / (power_tot + 1e-8)

@@ -101,6 +101,13 @@ class CompositeLoss:
             total = total + scale * w_stab * stab
             logs["stability"] = stab.detach()
 
+        w_spec = self.w.get("spectral", 0.0)
+        if w_spec > 0:
+            spec = physics.spectral_penalty(
+                pred_phys["UVEL"], pred_phys["VVEL"], self.grid)
+            total = total + scale * w_spec * spec
+            logs["spectral"] = spec.detach()
+
         logs["total"] = total.detach()
         logs["phys_scale"] = torch.tensor(scale)
         return {"loss": total, "logs": logs}

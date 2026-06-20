@@ -1,0 +1,92 @@
+# Run 5: barotropic projection + spectral regularization + deep rollout curriculum.
+#
+# Key changes from run4:
+#   - physics.barotropic_projection: true  — Jacobi Poisson solve (20 iters)
+#     removes the vertically-integrated velocity divergence after every step,
+#     the velocity analog of run4's heat+salt conservation projection.
+#     The soft barotropic weight is set to 0.0 (redundant with the hard constraint).
+#   - loss_weights.spectral: 0.005  — penalise high-wavenumber (k>60) kinetic
+#     energy in UVEL/VVEL to suppress grid-scale noise over long rollouts.
+#   - rollout_curriculum extended to rl=128 and rl=256: compound 10.7- and
+#     21.3-year rollout targets train the model against very-long-horizon errors.
+#   - Warm-started from checkpoints/run4/last.pt via --init-weights; starts at
+#     rl=32 to let the model re-adapt to the new projections before escalating.
+
+seed: 0
+
+data:
+  root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+  experiment: B20TRC5CNBDRD
+  grid_member: "001"
+  grid_file: data/grid_gx1v6.nc
+  stats_file: data/stats.nc
+
+  prognostic: [TEMP, SALT, UVEL, VVEL]
+  surface_prognostic: [SSH]
+  forcing: [SHF, SHF_QSW, SFWF, TAUX, TAUY]
+
+  nlev: 60
+  nlat: 384
+  nlon: 320
+
+  train_members: ["002","003","004","005","006","007","008","009","010",
+                  "011","012","013","014","015","016","017","018","019","020"]
+  val_members:   ["001"]
+  test_members:  ["021","022"]
+
+  t_start: 360
+  t_end: -1
+  step_months: 1
+
+normalize:
+  per_level: true
+  tendency_weighted_loss: true
+
+model:
+  arch: spherical_unet
+  width: 96
+  depth: 4
+  blocks_per_stage: 2
+  film_forcing: true
+  residual_update: true
+  history: 2
+
+physics:
+  diagnose_wvel: true
+  barotropic: rigid_lid
+  conservation_projection: true          # exact heat+salt budget closure (run4)
+  barotropic_projection: true            # NEW: Jacobi Poisson for velocity divergence
+  barotropic_n_iter: 20
+  loss_weights:
+    data: 1.0
+    continuity: 0.1                      # 3-D rigid-lid surface kinematic (kept soft)
+    barotropic: 0.0                      # now a hard constraint; soft term disabled
+    heat: 0.0                            # redundant with conservation projection
+    salt: 0.0                            # redundant with conservation projection
+    stability: 0.02
+    spectral: 0.005                      # NEW: high-k KE penalty on UVEL/VVEL
+  physics_warmup_steps: 0
+
+train:
+  # rl=32 for first 4k steps: let the model re-adapt to the barotropic projection
+  # before jumping to longer rollouts. Then extend to the novel rl=128 and rl=256
+  # territory that is expected to push the stability ceiling well past run4's 327 mo.
+  rollout_curriculum: [[0,32],[4000,64],[12000,128],[28000,256]]
+  noise_injection: 0.1
+  batch_size: 1
+  grad_accum: 4
+  epochs: 50
+  lr: 3.0e-5                             # reduced for warm start with new projections
+  weight_decay: 0.05
+  warmup_steps: 100
+  amp: true
+  grad_clip: 1.0
+  num_workers: 4
+  ckpt_dir: checkpoints/run5
+  log_dir: runs/run5
+  log_every: 50
+  ckpt_every: 2000
+
+eval:
+  rollout_months: 24
+  reference: persistence
