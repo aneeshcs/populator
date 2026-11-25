@@ -51,7 +51,7 @@ import matplotlib.pyplot as plt                         # noqa: E402
 @torch.no_grad()
 def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
                    forcing_list, t0, months, device, project=False,
-                   baro_project=False, baro_n_iter=20):
+                   baro_project=False, baro_n_iter=20, dt=None, records_per_year=12):
     """Free-running rollout with POP surface forcing. Returns emulator and POP
     monthly SST (TEMP k=0) and SSH stacked as (T, J, I), plus the achieved
     length (truncated if the rollout goes unstable).
@@ -62,11 +62,10 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
     statevars = packer.prognostic + packer.surface
     H = getattr(model, "history", 1)
     hist = [normalizer.normalize(packer.pack(
-                {v: ds._read_slice(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
+                {v: ds.read_time(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
                  for v in statevars})) for h in range(H)]
-    month = t0 % 12
-    ang = 2 * np.pi * month / 12.0
-    month_emb = torch.tensor([[np.sin(ang), np.cos(ang)]], dtype=torch.float32, device=device)
+    month_emb = torch.tensor([utils.time_embedding(t0, records_per_year)],
+                             dtype=torch.float32, device=device)
 
     chan_mask = _chan_mask(packer, grid).to(device)
     mask2d = grid.mask2d.bool().cpu().numpy()
@@ -76,7 +75,7 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
     achieved = 0
     for step in range(months):
         t = t0 + step
-        forcing_phys = {v: ds._read_slice(member, v, t).unsqueeze(0).to(device)
+        forcing_phys = {v: ds.read_time(member, v, t).unsqueeze(0).to(device)
                         for v in forcing_list}
         forcing_packed = torch.stack(
             [forcing_phys[v] for v in forcing_list], dim=1)
@@ -91,7 +90,7 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
             pred_phys = packer.unpack(normalizer.denormalize(x))
             if project:
                 pred_phys, _ = conservation_projection(
-                    pred_phys, prev_phys, forcing_phys, grid)
+                    pred_phys, prev_phys, forcing_phys, grid, dt=dt)
             if baro_project:
                 pred_phys, _ = barotropic_projection(
                     pred_phys, grid, n_iter=baro_n_iter)
@@ -110,10 +109,10 @@ def forced_rollout(model, packer, normalizer, fnorm, grid, ds, member,
 
         emu_sst.append(sst)
         emu_ssh.append(ssh)
-        pop_sst.append(ds._read_slice(member, "TEMP", t + 1)[0].numpy())
-        pop_ssh.append(ds._read_slice(member, "SSH", t + 1).numpy())
+        pop_sst.append(ds.read_time(member, "TEMP", t + 1)[0].numpy())
+        pop_ssh.append(ds.read_time(member, "SSH", t + 1).numpy())
         achieved += 1
-        month_emb = _advance_month_emb(month_emb)
+        month_emb = _advance_month_emb(month_emb, records_per_year)
         if (step + 1) % 60 == 0:
             print(f"[diag] rolled {step+1}/{months} months", flush=True)
 
@@ -264,7 +263,8 @@ def main():
         model, packer, normalizer, fnorm, grid, ds, args.member,
         forcing_list, args.t0, args.months, device,
         project=args.project,
-        baro_project=args.baro_project, baro_n_iter=args.baro_n_iter)
+        baro_project=args.baro_project, baro_n_iter=args.baro_n_iter,
+        dt=utils.step_seconds(cfg), records_per_year=utils.records_per_year(cfg))
     print(f"[diag] achieved {n} stable months")
 
     tlon = grid.tlong.cpu().numpy(); tlat = grid.tlat.cpu().numpy()

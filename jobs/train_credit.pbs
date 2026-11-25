@@ -1,0 +1,56 @@
+#!/bin/bash
+#PBS -N pop_emu_credit
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l select=1:ncpus=16:ngpus=1:mem=200GB:gpu_type=a100
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/train_credit.log
+
+# Train the POP ocean emulator with the CREDIT Gen 2 trainer.
+#
+#   qsub -v CONFIG=configs/credit/run6_monthly.yml,INIT_CKPT=checkpoints/run5/last.pt jobs/train_credit.pbs
+#
+# CONFIG     CREDIT Gen 2 config (default configs/credit/run6_monthly.yml)
+# INIT_CKPT  legacy checkpoint converted into save_loc on the first submission
+#            only; later submissions resume from save_loc/checkpoint.pt, which
+#            CREDIT rewrites after every epoch (trainer.reload_epoch: true).
+# CONVERT_ARGS  extra converter flags; the daily fine-tune needs
+#            CONVERT_ARGS="--cond-step --reset-epoch":
+#   qsub -v 'CONFIG=configs/credit/run7_daily.yml,INIT_CKPT=checkpoints/run5/last.pt,CONVERT_ARGS=--cond-step --reset-epoch' jobs/train_credit.pbs
+# For multi-GPU DDP raise ngpus above and the job launches through torchrun.
+
+set -e
+CONDA=/glade/work/acsubram/conda-envs/credit-gen2/bin
+REPO=/glade/work/acsubram/GitRepos/pop-ocean-emulator
+cd $REPO
+mkdir -p jobs/logs
+
+# Always run the current source, never stale bytecode.
+find src -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
+export PYTHONDONTWRITEBYTECODE=1
+
+echo "Job started: $(date) on $(hostname)"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+
+CONFIG=${CONFIG:-configs/credit/run6_monthly.yml}
+INIT_CKPT=${INIT_CKPT:-}
+SAVE_LOC=$($CONDA/python -c "import os, sys, yaml; print(os.path.expandvars(yaml.safe_load(open(sys.argv[1]))['save_loc']))" "$CONFIG")
+echo "config=$CONFIG save_loc=$SAVE_LOC"
+
+if [ ! -f "$SAVE_LOC/checkpoint.pt" ]; then
+    if [ -n "$INIT_CKPT" ] && [ -f "$INIT_CKPT" ]; then
+        $CONDA/python scripts/convert_ckpt_to_credit.py --checkpoint "$INIT_CKPT" --config "$CONFIG" $CONVERT_ARGS
+    else
+        echo "no checkpoint in $SAVE_LOC and no INIT_CKPT: set trainer.load_weights: false to train from scratch"
+    fi
+fi
+
+NGPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+if [ "$NGPU" -gt 1 ]; then
+    $CONDA/torchrun --standalone --nproc-per-node "$NGPU" scripts/train_credit.py -c "$CONFIG"
+else
+    $CONDA/python scripts/train_credit.py -c "$CONFIG"
+fi
+
+echo "Job finished: $(date)"

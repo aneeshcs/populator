@@ -97,6 +97,49 @@ qsub jobs/train.pbs
 
 The data root and ensemble-member split are set in `configs/default.yaml`.
 
+## CREDIT Gen 2 training path and the daily step
+
+`src/pop_emulator/credit_ext/` runs the same `OceanUNet` under the CREDIT Gen 2
+trainer (`miles-credit==2026.2.0`; `pip install -e .[credit]`), which supplies
+DDP, EMA and per-epoch checkpointing. The legacy loop (`scripts/train.py`)
+remains functional.
+
+| Module | Role |
+|---|---|
+| `dataset.py`, `dataset_daily.py` | CESM-LE monthly records; daily surface + monthly interior samples |
+| `preblocks.py`, `postblocks.py` | `stats.nc` standardisation; exact heat/salt budget projection per step |
+| `model.py` | `PopOceanUNet` (parameter names unchanged, so legacy weights load) |
+| `loss.py` | legacy composite loss; daily surface loss + monthly-mean term |
+| `trainer.py`, `trainer_daily.py` | rollout-length curriculum; two-pass monthly-mean gradient |
+
+```bash
+CONDA=/glade/work/acsubram/conda-envs/credit-gen2/bin
+
+# Monthly step (run 6): continue run 5 under CREDIT Gen 2
+qsub -v CONFIG=configs/credit/run6_monthly.yml,INIT_CKPT=checkpoints/run5/last.pt jobs/train_credit.pbs
+
+# Daily step (run 7)
+qsub jobs/rechunk_daily.pbs                    # daily SST, SSH, TAUX, TAUY -> Zarr (from 1950-01-01)
+$CONDA/python scripts/compute_daily_stats.py --config configs/run7_daily.yaml \
+    --daily-zarr-root /glade/derecho/scratch/$USER/pop_emulator_zarr_daily
+qsub -v 'CONFIG=configs/credit/run7_daily.yml,INIT_CKPT=checkpoints/run5/last.pt,CONVERT_ARGS=--cond-step --reset-epoch' jobs/train_credit.pbs
+```
+
+The time step is explicit: $x(t+\Delta t) = x(t) + (\Delta t/\Delta t_{\mathrm{month}})\,F_\theta(\cdot)$
+(`model.step_scale`), and `physics.dt_seconds` sets the interval of the heat and
+salt budgets. With `step_scale = 1` the monthly model is unchanged; with
+`step_scale = 12/365` the pretrained network starts as a forward-Euler step of
+its monthly tendency.
+
+**Daily supervision.** CESM-LE archives daily means of SST, SSH and wind stress
+only. The daily model is trained on daily SST and SSH; temperature below the
+surface, salinity and velocity are constrained only through calendar-month means
+of the daily rollout, and SHF, SHF_QSW and SFWF are held at their monthly means.
+Daily variability of the interior and the response to synoptic heat and
+freshwater fluxes are therefore not validated. The CESM-LE daily files begin on
+2 January of each member's first year; the Zarr stores are trimmed to start on
+1950-01-01.
+
 ## Status
 
 This repository is a complete, runnable scaffold: the physics operators, data

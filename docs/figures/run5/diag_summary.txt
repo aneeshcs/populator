@@ -1,0 +1,4 @@
+member=001 t0=360 stable_months=368 (30.7 yr)
+Nino3.4: corr=0.97 std_ratio=1.06
+AMO: corr=0.80 std_ratio=0.79
+PDO: PC1 corr=0.89 varfrac POP=0.28 emu=0.35

@@ -22,10 +22,10 @@ def month_cond(month_emb: torch.Tensor, forcing_norm: torch.Tensor) -> torch.Ten
     return torch.cat([month_emb, gmean], dim=-1)
 
 
-def _advance_month_emb(month_emb: torch.Tensor) -> torch.Tensor:
-    """Advance the cyclic month embedding by one month."""
+def _advance_month_emb(month_emb: torch.Tensor, records_per_year: int = 12) -> torch.Tensor:
+    """Advance the annual-phase embedding by one step (1/records_per_year of a year)."""
     sin, cos = month_emb[:, 0], month_emb[:, 1]
-    ang = torch.atan2(sin, cos) + 2.0 * np.pi / 12.0
+    ang = torch.atan2(sin, cos) + 2.0 * np.pi / records_per_year
     return torch.stack([torch.sin(ang), torch.cos(ang)], dim=-1)
 
 
@@ -37,7 +37,9 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
             grid, mask_outputs: bool = True,
             project: bool = False,
             baro_project: bool = False,
-            baro_n_iter: int = 20) -> List[Dict[str, torch.Tensor]]:
+            baro_n_iter: int = 20,
+            dt: Optional[float] = None,
+            records_per_year: int = 12) -> List[Dict[str, torch.Tensor]]:
     """Integrate forward ``len(forcing_seq)`` steps.
 
     Parameters
@@ -47,6 +49,8 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
                    accessible.
     baro_project : additionally apply barotropic Poisson projection to remove
                    depth-integrated velocity divergence.
+    dt           : step length [s]; required when ``project`` is set.
+    records_per_year : steps per model year (12 monthly, 365 daily).
 
     Returns the predicted physical-unit states at each step (excluding the
     initial condition).
@@ -73,7 +77,7 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
             pred_phys = packer.unpack(normalizer.denormalize(x))
             if project:
                 pred_phys, _ = physics.conservation_projection(
-                    pred_phys, prev_phys, forcing_phys, grid)
+                    pred_phys, prev_phys, forcing_phys, grid, dt=dt)
             if baro_project:
                 pred_phys, _ = physics.barotropic_projection(
                     pred_phys, grid, n_iter=baro_n_iter)
@@ -82,7 +86,7 @@ def rollout(model: OceanEmulator, packer: StatePacker, normalizer: Normalizer,
                 x = x * chan_mask
 
         preds.append(packer.unpack(normalizer.denormalize(x)))
-        month_emb = _advance_month_emb(month_emb)
+        month_emb = _advance_month_emb(month_emb, records_per_year)
 
     return preds
 

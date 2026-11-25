@@ -22,6 +22,7 @@ from pop_emulator.model import OceanEmulator            # noqa: E402
 from pop_emulator.normalization import StatePacker      # noqa: E402
 from pop_emulator.rollout import month_cond             # noqa: E402
 from pop_emulator import testing                        # noqa: E402
+from pop_emulator import utils                          # noqa: E402
 
 GREEN, RED, RESET = "\033[92m", "\033[91m", "\033[0m"
 
@@ -65,7 +66,8 @@ def main():
     pred["TEMP"] = pred["TEMP"] + 0.01 * grid.mask3d[None]   # uniform warming
     cons = physics.conservation_losses(pred, state, grid,
                                        forcing={"SHF": torch.zeros(2, *grid.mask2d.shape),
-                                                "SFWF": torch.zeros(2, *grid.mask2d.shape)})
+                                                "SFWF": torch.zeros(2, *grid.mask2d.shape)},
+                                       dt=utils.step_seconds(cfg))
     check("heat budget term finite", torch.isfinite(cons["heat"]))
     check("salt budget term finite", torch.isfinite(cons["salt"]))
     check("barotropic term finite", torch.isfinite(cons["barotropic"]))

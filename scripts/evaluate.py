@@ -69,12 +69,11 @@ def main():
     statevars = d["prognostic"] + d["surface_prognostic"]
     H = getattr(model, "history", 1)
     hist = [normalizer.normalize(packer.pack(
-                {v: ds._read_slice(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
+                {v: ds.read_time(member, v, t0 - (H - 1 - h)).unsqueeze(0).to(device)
                  for v in statevars})) for h in range(H)]
-    ic = {v: ds._read_slice(member, v, t0).unsqueeze(0).to(device) for v in statevars}
-    month = t0 % 12
-    ang = 2 * np.pi * month / 12.0
-    month_emb = torch.tensor([[np.sin(ang), np.cos(ang)]], dtype=torch.float32, device=device)
+    ic = {v: ds.read_time(member, v, t0).unsqueeze(0).to(device) for v in statevars}
+    rpy = utils.records_per_year(cfg)
+    month_emb = torch.tensor([utils.time_embedding(t0, rpy)], dtype=torch.float32, device=device)
 
     chan_mask = _chan_mask(packer, grid).to(device)
     persistence = {v: ic[v].clone() for v in statevars}
@@ -87,7 +86,7 @@ def main():
     for step in range(horizon):
         t = t0 + step
         forcing = torch.stack(
-            [ds._read_slice(member, v, t).to(device) for v in forcing_list], dim=0
+            [ds.read_time(member, v, t).to(device) for v in forcing_list], dim=0
         ).unsqueeze(0)
         fnz = fnorm.normalize(forcing)
         cond = month_cond(month_emb, fnz)
@@ -98,7 +97,7 @@ def main():
             hist.pop(0)
         pred = packer.unpack(normalizer.denormalize(x))
 
-        truth = {v: ds._read_slice(member, v, t + 1).unsqueeze(0).to(device)
+        truth = {v: ds.read_time(member, v, t + 1).unsqueeze(0).to(device)
                  for v in statevars}
 
         if (step + 1) % max(1, horizon // 6) == 0 or step == horizon - 1:
@@ -113,7 +112,7 @@ def main():
             dS = (physics.salt_content(pred["SALT"], grid) - s0) / s0.abs().clamp_min(1)
             print(f"     heat-content drift {float(dH):+.3e} | "
                   f"salt-content drift {float(dS):+.3e}")
-        month_emb = _advance_month_emb(month_emb)
+        month_emb = _advance_month_emb(month_emb, rpy)
 
     print("[eval] done")
 

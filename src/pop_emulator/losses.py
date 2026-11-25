@@ -16,6 +16,7 @@ import torch
 from . import physics
 from .grid import PopGrid
 from .normalization import Normalizer, StatePacker
+from .utils import step_seconds
 
 
 class CompositeLoss:
@@ -27,6 +28,8 @@ class CompositeLoss:
         self.grid = grid
         self.w = cfg["physics"]["loss_weights"]
         self.warmup = cfg["physics"].get("physics_warmup_steps", 0)
+        # Step length [s] for the heat/salt budget terms.
+        self.dt = step_seconds(cfg)
 
         # Per-channel ocean mask aligned to the packer layout, shape (1, C, J, I).
         mask_chans = []
@@ -83,7 +86,7 @@ class CompositeLoss:
         true_phys = self.packer.unpack(self.normalizer.denormalize(target_norm))
 
         cons = physics.conservation_losses(pred_phys, prev_phys, self.grid,
-                                            forcing=forcing_phys)
+                                            forcing=forcing_phys, dt=self.dt)
         for key in ("continuity", "barotropic", "heat", "salt"):
             wk = self.w.get(key, 0.0)
             if wk > 0:

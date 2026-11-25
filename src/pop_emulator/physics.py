@@ -183,7 +183,7 @@ def conservation_losses(pred: Dict[str, torch.Tensor],
                         prev: Dict[str, torch.Tensor],
                         grid: PopGrid,
                         forcing: Optional[Dict[str, torch.Tensor]] = None,
-                        dt: float = None) -> Dict[str, torch.Tensor]:
+                        *, dt: float) -> Dict[str, torch.Tensor]:
     """Budget-consistency penalties tying state change to the surface forcing.
 
     The predicted change in global heat / salt content over one step should
@@ -194,13 +194,12 @@ def conservation_losses(pred: Dict[str, torch.Tensor],
     ----------
     pred, prev : dict with keys TEMP, SALT, UVEL, VVEL (physical units)
     forcing    : dict with SHF [W/m^2] and SFWF (freshwater) if available
-    dt         : step length in seconds (defaults to one POP month)
+    dt         : step length in seconds (required; ``utils.step_seconds(cfg)``)
 
     Returns a dict of scalar losses plus signed budget diagnostics.
     """
     from .constants import SECONDS_PER_MONTH
 
-    dt = SECONDS_PER_MONTH if dt is None else dt
     out: Dict[str, torch.Tensor] = {}
 
     # Both budgets are expressed as a *bounded relative closure error*:
@@ -209,7 +208,10 @@ def conservation_losses(pred: Dict[str, torch.Tensor],
     # violation by the magnitude of the change itself keeps the term in
     # [0, ~4] for any batch (no dependence on a hand-tuned scale), which avoids
     # the spikes that arise when the flux-implied change happens to be ~0.
-    eps_h, eps_s = 1.0e10, 1.0e8
+    # The floors were chosen for monthly content changes; content changes scale
+    # with the step length, so the floors scale with dt.
+    eps_h = 1.0e10 * dt / SECONDS_PER_MONTH
+    eps_s = 1.0e8 * dt / SECONDS_PER_MONTH
 
     # --- heat-content budget --------------------------------------------- #
     dH = heat_content(pred["TEMP"], grid) - heat_content(prev["TEMP"], grid)
@@ -291,7 +293,8 @@ def conservation_projection(
     prev: Dict[str, torch.Tensor],
     forcing: Optional[Dict[str, torch.Tensor]],
     grid: PopGrid,
-    dt: float = None,
+    *,
+    dt: float,
 ):
     """Exactly close the global heat and salt budgets after each model step.
 
@@ -313,7 +316,7 @@ def conservation_projection(
     forcing : physical-unit surface forcing dict
               SHF  [W m⁻²], SFWF [kg m⁻² s⁻¹] — omit either to skip that budget
     grid    : PopGrid (cell volumes, surface areas, ocean constants)
-    dt      : timestep in seconds; defaults to one POP noleap month
+    dt      : timestep in seconds (required; ``utils.step_seconds(cfg)``)
 
     Returns
     -------
@@ -321,9 +324,6 @@ def conservation_projection(
                 (all other variables passed through unchanged)
     diag      : {"proj_delta_T": mean |δT| [°C], "proj_delta_S": mean |δS| [psu]}
     """
-    from .constants import SECONDS_PER_MONTH
-    dt = SECONDS_PER_MONTH if dt is None else dt
-
     rho0    = grid.consts.rho_sw * 1.0e3      # g cm⁻³ → kg m⁻³
     cp      = grid.consts.cp_sw  * 1.0e-4     # erg g⁻¹ K⁻¹ → J kg⁻¹ K⁻¹
     dV      = _volume_si(grid)                 # (Z, J, I) m³, zero on land

@@ -7,6 +7,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from pop_emulator import physics
+from pop_emulator.constants import SECONDS_PER_DAY, SECONDS_PER_MONTH
 from pop_emulator.grid import shift_i, shift_j
 from pop_emulator.normalization import StatePacker
 from pop_emulator import testing
@@ -83,7 +84,8 @@ def test_conservation_runs_and_is_finite():
     shp = (2, *grid.mask2d.shape)
     cons = physics.conservation_losses(
         pred, state, grid,
-        forcing={"SHF": torch.zeros(shp), "SFWF": torch.zeros(shp)})
+        forcing={"SHF": torch.zeros(shp), "SFWF": torch.zeros(shp)},
+        dt=SECONDS_PER_MONTH)
     for k in ("heat", "salt", "barotropic", "continuity"):
         assert torch.isfinite(cons[k])
 
@@ -95,3 +97,72 @@ def test_static_stability_zero_when_equal():
     pen = physics.static_stability_penalty(
         state["TEMP"], state["SALT"], state["TEMP"], state["SALT"], grid)
     assert float(pen) == 0.0
+
+
+def test_projection_closes_budget_for_any_dt():
+    """After projection the heat-content change equals dt x area-integrated SHF,
+    for a monthly and for a daily step."""
+    grid = testing.synthetic_grid()
+    packer = StatePacker(["TEMP", "SALT", "UVEL", "VVEL"], ["SSH"], grid.shape[0])
+    prev = testing.synthetic_state(grid, packer, B=2)
+    pred = {k: v.clone() for k, v in prev.items()}
+    pred["TEMP"] = pred["TEMP"] + 0.3 * grid.mask3d[None]
+    shp = (2, *grid.mask2d.shape)
+    forcing = {"SHF": torch.full(shp, 20.0), "SFWF": torch.zeros(shp)}
+    area = physics._surface_area_m2(grid).double()
+    for dt in (SECONDS_PER_MONTH, SECONDS_PER_DAY):
+        corrected, _ = physics.conservation_projection(pred, prev, forcing, grid, dt=dt)
+        dH = (physics.heat_content(corrected["TEMP"], grid)
+              - physics.heat_content(prev["TEMP"], grid))
+        dH_flux = dt * (forcing["SHF"].double() * area).flatten(1).sum(1)
+        assert torch.allclose(dH, dH_flux, rtol=1e-3)
+
+
+def _synthetic_model(**model_overrides):
+    from pop_emulator.model import OceanEmulator
+
+    cfg = testing.synthetic_cfg()
+    cfg["model"].update(model_overrides)
+    grid = testing.synthetic_grid()
+    packer = StatePacker(cfg["data"]["prognostic"], cfg["data"]["surface_prognostic"],
+                         cfg["data"]["nlev"])
+    n_f = len(cfg["data"]["forcing"])
+    torch.manual_seed(0)
+    model = OceanEmulator(cfg, packer, grid, n_forcing=n_f).eval()
+    # The output conv is zero-initialised; perturb it so the tendency is non-zero.
+    with torch.no_grad():
+        for p in model.net.parameters():
+            p.add_(0.01 * torch.randn_like(p))
+    return model, packer, grid, n_f
+
+
+def test_step_scale_is_euler_scaling_of_the_tendency():
+    """x + s*F: step_scale = 1 is the monthly model; s scales the increment only."""
+    base_model, packer, grid, n_f = _synthetic_model()
+    scaled, *_ = _synthetic_model(step_scale=0.25)
+    scaled.load_state_dict(base_model.state_dict())
+    J, I = grid.mask2d.shape
+    x = torch.randn(2, packer.n_channels, J, I)
+    f = torch.randn(2, n_f, J, I)
+    cond = torch.randn(2, 2 + n_f)
+    with torch.no_grad():
+        full = base_model(x, f, cond)
+        part = scaled(x, f, cond)
+    assert torch.allclose(part - x, 0.25 * (full - x), atol=1e-5)
+
+
+def test_cond_step_with_zero_padded_weight_matches_unconditioned_model():
+    """Appending the step ratio to the FiLM condition with a zero weight column
+    (what convert_ckpt_to_credit.py --cond-step writes) leaves outputs unchanged."""
+    base_model, packer, grid, n_f = _synthetic_model()
+    cond_model, *_ = _synthetic_model(cond_step=True)
+    state = dict(base_model.state_dict())
+    key = "net.film.net.0.weight"
+    state[key] = torch.cat([state[key], torch.zeros(state[key].shape[0], 1)], dim=1)
+    cond_model.load_state_dict(state)
+    J, I = grid.mask2d.shape
+    x = torch.randn(2, packer.n_channels, J, I)
+    f = torch.randn(2, n_f, J, I)
+    cond = torch.randn(2, 2 + n_f)
+    with torch.no_grad():
+        assert torch.allclose(base_model(x, f, cond), cond_model(x, f, cond), atol=1e-6)

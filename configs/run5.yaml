@@ -1,16 +1,16 @@
-# Run 5: barotropic projection + spectral regularization + deep rollout curriculum.
+# Run 5: spectral regularization + deep rollout curriculum (warm from run4 step-24k).
 #
 # Key changes from run4:
-#   - physics.barotropic_projection: true  — Jacobi Poisson solve (20 iters)
-#     removes the vertically-integrated velocity divergence after every step,
-#     the velocity analog of run4's heat+salt conservation projection.
-#     The soft barotropic weight is set to 0.0 (redundant with the hard constraint).
 #   - loss_weights.spectral: 0.005  — penalise high-wavenumber (k>60) kinetic
 #     energy in UVEL/VVEL to suppress grid-scale noise over long rollouts.
 #   - rollout_curriculum extended to rl=128 and rl=256: compound 10.7- and
 #     21.3-year rollout targets train the model against very-long-horizon errors.
+#   - barotropic_projection: false  — the B-grid Jacobi Poisson stencil requires
+#     the 8-point discrete adjoint of the face-averaged divergence operator; the
+#     5-point C-grid stencil applied to U-points worsens divergence. Deferred to
+#     run6. Soft barotropic penalty (0.05) retained instead.
 #   - Warm-started from checkpoints/run4/last.pt via --init-weights; starts at
-#     rl=32 to let the model re-adapt to the new projections before escalating.
+#     rl=32 to let the model re-adapt before escalating.
 
 seed: 0
 
@@ -34,9 +34,12 @@ data:
   val_members:   ["001"]
   test_members:  ["021","022"]
 
+  # Record index, per member: 1880-01 for member 001 (record starts 1850),
+  # 1950-01 for members 002+ (record starts 1920).
   t_start: 360
   t_end: -1
   step_months: 1
+  zarr_root: /glade/derecho/scratch/acsubram/pop_emulator_zarr
 
 normalize:
   per_level: true
@@ -55,12 +58,12 @@ physics:
   diagnose_wvel: true
   barotropic: rigid_lid
   conservation_projection: true          # exact heat+salt budget closure (run4)
-  barotropic_projection: true            # NEW: Jacobi Poisson for velocity divergence
+  barotropic_projection: false           # Jacobi stencil deferred to run6 (B-grid adjoint needed)
   barotropic_n_iter: 20
   loss_weights:
     data: 1.0
     continuity: 0.1                      # 3-D rigid-lid surface kinematic (kept soft)
-    barotropic: 0.0                      # now a hard constraint; soft term disabled
+    barotropic: 0.05                     # soft depth-integrated divergence penalty (restored)
     heat: 0.0                            # redundant with conservation projection
     salt: 0.0                            # redundant with conservation projection
     stability: 0.02
@@ -68,10 +71,10 @@ physics:
   physics_warmup_steps: 0
 
 train:
-  # rl=32 for first 4k steps: let the model re-adapt to the barotropic projection
-  # before jumping to longer rollouts. Then extend to the novel rl=128 and rl=256
-  # territory that is expected to push the stability ceiling well past run4's 327 mo.
-  rollout_curriculum: [[0,32],[4000,64],[12000,128],[28000,256]]
+  # rl=32 for first 4k steps: let the model re-adapt before jumping to longer rollouts.
+  # Then extend to the novel rl=128 and rl=256 territory (10.7 and 21.3-year compound
+  # rollout targets) that is expected to push the stability ceiling well past run4's 327 mo.
+  rollout_curriculum: [[0,32],[4000,64],[9000,128],[25000,256]]
   noise_injection: 0.1
   batch_size: 1
   grad_accum: 4
@@ -85,7 +88,9 @@ train:
   ckpt_dir: checkpoints/run5
   log_dir: runs/run5
   log_every: 50
-  ckpt_every: 2000
+  # 500 steps: at rl>=128 a 12 h job advances < 2000 steps, so a coarser
+  # cadence loses all progress made after the last checkpoint.
+  ckpt_every: 500
 
 eval:
   rollout_months: 24

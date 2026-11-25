@@ -1,0 +1,28 @@
+#!/bin/bash
+#PBS -N pop_rechunk_daily
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l walltime=06:00:00
+#PBS -l select=1:ncpus=8:mem=64GB
+#PBS -j oe
+#PBS -o /glade/work/acsubram/GitRepos/pop-ocean-emulator/jobs/logs/rechunk_daily.log
+
+# Rechunk the CESM-LENS daily POP surface fields (SST, SSH_2, TAUX_2, TAUY_2)
+# to Zarr, starting 1950-01-01, for the daily fine-tune.
+#
+#   qsub jobs/rechunk_daily.pbs                               # members 001-006
+#   qsub -v "MEMBERS=007 008 009" jobs/rechunk_daily.pbs
+
+cd /glade/work/acsubram/GitRepos/pop-ocean-emulator
+mkdir -p jobs/logs
+echo "=== daily rechunk started $(date) on $(hostname) ==="
+PYTHON=/glade/work/acsubram/conda-envs/credit-gen2/bin/python
+
+MEMBERS_ARG=""
+if [ -n "$MEMBERS" ]; then
+    MEMBERS_ARG="--members $MEMBERS"
+fi
+
+$PYTHON scripts/rechunk_daily_to_zarr.py $MEMBERS_ARG \
+    --zarr-root /glade/derecho/scratch/acsubram/pop_emulator_zarr_daily 2>&1
+echo "=== daily rechunk finished $(date) ==="
