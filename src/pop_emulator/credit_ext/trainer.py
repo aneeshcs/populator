@@ -90,6 +90,10 @@ class PopTrainer(TrainerERA5Gen2):
 
                 conf = copy.deepcopy(self.conf)
                 conf["data"]["forecast_len"] = self.valid_forecast_len   # read by load_dataloader
+                # CREDIT adds derived keys to conf["data"] after the datasets are
+                # built; load_dataset rejects a validation_data block without them.
+                for key, value in conf["data"].items():
+                    conf["validation_data"].setdefault(key, value)
                 data_rank, data_world_size = data_parallel_coords(conf)
                 dataset = load_dataset(conf, is_train=False)
                 self._valid_loader = load_dataloader(conf, dataset, rank=data_rank,
