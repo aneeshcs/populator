@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N pop_rechunk
+#PBS -A UCUB0143
+#PBS -q casper
+#PBS -l walltime=12:00:00
+#PBS -l select=1:ncpus=8:mem=64GB
+#PBS -j oe
+#PBS -o jobs/logs/rechunk.log
+#PBS -m be
+#PBS -M aneeshcs@gmail.com
+
+# Rechunk CESM-LENS POP netCDF4 files to Zarr with time_chunk=300.
+# Run once; afterwards set data.zarr_root in the training config.
+#
+# Submit:
+#   qsub jobs/rechunk.pbs
+#
+# To rechunk only specific members or variables:
+#   qsub -v "MEMBERS=002 003 004,VARS=TEMP SALT" jobs/rechunk.pbs
+
+cd /glade/work/acsubram/GitRepos/pop-ocean-emulator
+
+echo "=== rechunk job started $(date) ==="
+echo "Node: $(hostname)"
+echo "PBS_JOBID: $PBS_JOBID"
+
+PYTHON=/glade/work/acsubram/conda-envs/credit/bin/python
+
+# Optional overrides via PBS -v (space-separated, quoted together)
+MEMBERS_ARG=""
+VARS_ARG=""
+if [ -n "$MEMBERS" ]; then
+    MEMBERS_ARG="--members $MEMBERS"
+fi
+if [ -n "$VARS" ]; then
+    VARS_ARG="--vars $VARS"
+fi
+
+$PYTHON scripts/rechunk_to_zarr.py \
+    $MEMBERS_ARG \
+    $VARS_ARG \
+    --zarr-root /glade/derecho/scratch/acsubram/pop_emulator_zarr \
+    2>&1
+
+echo "=== rechunk job finished $(date) ==="

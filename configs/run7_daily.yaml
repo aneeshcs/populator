@@ -1,0 +1,102 @@
+# Run 7: daily-step fine-tune of the run-5/run-6 monthly emulator (CREDIT Gen 2).
+#
+# Emulator-side settings read by pop_emulator.credit_ext (model, statistics,
+# physics weights).  Training settings live in configs/credit/run7_daily.yml;
+# the `train:` block below is unused by the CREDIT trainer.
+#
+# Changes from run5.yaml:
+#   - physics.dt_seconds: 86400     heat/salt projection over one day
+#   - data.records_per_year: 365    noleap daily records
+#   - model.step_scale: 12/365      x(t+dt) = x(t) + (dt/dt_month) F(.): at
+#     initialisation the daily model is a forward-Euler step of the monthly tendency
+#   - model.cond_step: true         dt/dt_month appended to the FiLM condition
+#   - data.daily_stats_file         daily SST/SSH tendency statistics (surface loss)
+
+seed: 0
+
+data:
+  root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+  experiment: B20TRC5CNBDRD
+  grid_member: "001"
+  grid_file: data/grid_gx1v6.nc
+  stats_file: data/stats.nc
+  daily_stats_file: data/stats_daily.nc   # scripts/compute_daily_stats.py
+  records_per_year: 365
+
+  prognostic: [TEMP, SALT, UVEL, VVEL]
+  surface_prognostic: [SSH]
+  forcing: [SHF, SHF_QSW, SFWF, TAUX, TAUY]
+
+  nlev: 60
+  nlat: 384
+  nlon: 320
+
+  train_members: ["002","003","004","005","006","007","008","009","010",
+                  "011","012","013","014","015","016","017","018","019","020"]
+  val_members:   ["001"]
+  test_members:  ["021","022"]
+
+  # Record index, per member: 1880-01 for member 001 (record starts 1850),
+  # 1950-01 for members 002+ (record starts 1920).
+  t_start: 360
+  t_end: -1
+  step_months: 1
+  zarr_root: /glade/derecho/scratch/acsubram/pop_emulator_zarr
+
+normalize:
+  per_level: true
+  tendency_weighted_loss: true
+
+model:
+  arch: spherical_unet
+  width: 96
+  depth: 4
+  blocks_per_stage: 2
+  film_forcing: true
+  residual_update: true
+  history: 2
+  step_scale: 0.0328767123            # 86400 s / (365/12 * 86400 s)
+  cond_step: true
+
+physics:
+  dt_seconds: 86400.0
+  diagnose_wvel: true
+  barotropic: rigid_lid
+  conservation_projection: true          # exact heat+salt budget closure (run4)
+  barotropic_projection: false           # Jacobi stencil deferred to run6 (B-grid adjoint needed)
+  barotropic_n_iter: 20
+  loss_weights:
+    data: 1.0
+    continuity: 0.1                      # 3-D rigid-lid surface kinematic (kept soft)
+    barotropic: 0.05                     # soft depth-integrated divergence penalty (restored)
+    heat: 0.0                            # redundant with conservation projection
+    salt: 0.0                            # redundant with conservation projection
+    stability: 0.02
+    spectral: 0.005                      # NEW: high-k KE penalty on UVEL/VVEL
+  physics_warmup_steps: 0
+
+train:
+  # rl=32 for first 4k steps: let the model re-adapt before jumping to longer rollouts.
+  # Then extend to the novel rl=128 and rl=256 territory (10.7 and 21.3-year compound
+  # rollout targets) that is expected to push the stability ceiling well past run4's 327 mo.
+  rollout_curriculum: [[0,32],[4000,64],[9000,128],[25000,256]]
+  noise_injection: 0.1
+  batch_size: 1
+  grad_accum: 4
+  epochs: 50
+  lr: 3.0e-5                             # reduced for warm start with new projections
+  weight_decay: 0.05
+  warmup_steps: 100
+  amp: true
+  grad_clip: 1.0
+  num_workers: 4
+  ckpt_dir: checkpoints/run7_daily
+  log_dir: runs/run7_daily
+  log_every: 50
+  # 500 steps: at rl>=128 a 12 h job advances < 2000 steps, so a coarser
+  # cadence loses all progress made after the last checkpoint.
+  ckpt_every: 500
+
+eval:
+  rollout_months: 24
+  reference: persistence

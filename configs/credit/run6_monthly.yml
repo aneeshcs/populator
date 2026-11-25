@@ -1,0 +1,159 @@
+# Run 6 — the run-5 emulator under the CREDIT Gen 2 trainer (monthly step).
+#
+# Same model, data, normalisation, loss and physics as configs/run5.yaml
+# (referenced below as `pop_config`, which stays the single source of truth for
+# variables, grid, statistics, architecture and physics weights).  What changes
+# is the training framework: CREDIT Gen 2 (miles-credit v2026.2.0) supplies the
+# trainer, DDP/FSDP2, EMA and per-epoch checkpointing.
+#
+# Launch (PopTrainer is registered by the launcher, not by custom_objects):
+#   python scripts/convert_ckpt_to_credit.py --checkpoint checkpoints/run5/last.pt \
+#       --config configs/credit/run6_monthly.yml
+#   python scripts/train_credit.py -c configs/credit/run6_monthly.yml
+
+save_loc: /glade/work/acsubram/GitRepos/pop-ocean-emulator/checkpoints/credit/run6_monthly
+seed: 0
+
+custom_objects:
+  PopLENSGen2Dataset:
+    object_type: dataset
+    module_path: pop_emulator.credit_ext.dataset
+  PopNormalize:
+    object_type: preblock
+    module_path: pop_emulator.credit_ext.preblocks
+  pop_ocean_unet:
+    object_type: model
+    module_path: pop_emulator.credit_ext.model
+    module_name: PopOceanUNet
+  PopDenormalize:
+    object_type: postblock
+    module_path: pop_emulator.credit_ext.postblocks
+  OceanConservationProjection:
+    object_type: postblock
+    module_path: pop_emulator.credit_ext.postblocks
+  PopCompositeLoss:
+    object_type: loss
+    module_path: pop_emulator.credit_ext.loss
+  PopMaskedRMSE:
+    object_type: metric
+    module_path: pop_emulator.credit_ext.loss
+
+# ---------------------------------------------------------------------------
+# Data.  The clock is a RECORD clock, not model time: one 1h tick is one
+# monthly record, and each ensemble member occupies its own block of ticks
+# (see pop_emulator/credit_ext/dataset.py).  start/end only need to span all
+# member blocks (40,000 ticks each, up to 21 members).
+# ---------------------------------------------------------------------------
+data:
+  timestep: "1h"
+  start_datetime: "2000-01-01"
+  end_datetime: "2100-01-01"
+  history_len: 2
+  forecast_len: 32            # overridden per epoch by trainer.rollout_curriculum
+  source:
+    POP: &pop_source
+      dataset_type: PopLENSGen2Dataset
+      root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+      zarr_root: /glade/derecho/scratch/acsubram/pop_emulator_zarr
+      experiment: B20TRC5CNBDRD
+      members: ["002", "003", "004", "005", "006", "007", "008", "009", "010", "011",
+                "012", "013", "014", "015", "016", "017", "018", "019", "020"]
+      # Record index per member: 1950-01 for members 002+ (records start 1920-01).
+      t_start: 360
+      t_end: -1
+      records_per_year: 12
+      read_ahead: 64          # records buffered per variable and worker (~7.6 GB)
+      variables:
+        prognostic:
+          vars_3D: [TEMP, SALT, UVEL, VVEL]
+          vars_2D: [SSH]
+        dynamic_forcing:
+          vars_2D: [SHF, SHF_QSW, SFWF, TAUX, TAUY, TIME_SIN, TIME_COS]
+
+validation_data:
+  timestep: "1h"
+  start_datetime: "2000-01-01"
+  end_datetime: "2100-01-01"
+  history_len: 2
+  forecast_len: 12
+  source:
+    POP:
+      <<: *pop_source
+      members: ["001"]        # member 001 starts 1850-01, so t_start 360 is 1880-01
+
+preblocks:
+  per_step:
+    normalize:
+      type: PopNormalize
+      args: {pop_config: configs/run5.yaml}
+    concat:
+      type: concat
+
+postblocks:
+  per_step:
+    reconstruct:
+      type: reconstruct
+      args: {detach: false}   # keep the projection inside the per-step gradient
+    denormalize:
+      type: PopDenormalize
+      args: {pop_config: configs/run5.yaml}
+    conservation:
+      type: OceanConservationProjection
+      args: {pop_config: configs/run5.yaml}
+
+model:
+  type: pop_ocean_unet
+  pop_config: configs/run5.yaml
+  levels: 60                  # read by CREDIT's channel schema
+  noise_injection: 0.1        # input-only noise, in field-sigma units (training mode)
+  amp_dtype: bf16             # autocast inside the model; trainer.amp stays false
+
+loss:
+  type: PopCompositeLoss
+  args: {pop_config: configs/run5.yaml}
+
+metrics:
+  type: PopMaskedRMSE
+  args: {pop_config: configs/run5.yaml}
+
+trainer:
+  type: pop-gen2
+  parallelism: {data: ddp, tensor: 1, domain: 1}
+
+  # Warm start from the converted run-5 checkpoint (weights only).
+  load_weights: true
+  load_optimizer: false
+  load_scaler: false
+  load_scheduler: false
+  reload_epoch: true          # on resubmission, continue from the last saved epoch
+  start_epoch: 80             # run-5 checkpoint is at legacy step 8000 = 80 epochs x 100
+
+  # One epoch = 100 sequences; a checkpoint is written after every epoch.
+  epochs: 400
+  batches_per_epoch: 100
+  # [first sequence, rollout length] — the run-5 schedule, in the same units.
+  rollout_curriculum:
+    - [0, 32]
+    - [4000, 64]
+    - [9000, 128]
+    - [25000, 256]
+
+  train_batch_size: 1
+  valid_batch_size: 1
+  grad_accum_every: 4
+  grad_max_norm: 1.0
+  learning_rate: 3.0e-5
+  weight_decay: 0.05
+  use_scheduler: false
+  amp: false
+  thread_workers: 4
+  valid_thread_workers: 2
+  prefetch_factor: 2
+
+  skip_validation: false
+  valid_batches_per_epoch: 8
+  training_metric: valid_loss
+  save_best_weights: true
+  save_backup_weights: true
+  use_ema: false
+  use_tensorboard: true

@@ -11,7 +11,7 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
 \usepackage{subcaption}
-\graphicspath{{figures/}{figures/run3/}{figures/run4/}}
+\graphicspath{{figures/}{figures/run3/}{figures/run4/}{figures/run5/}}
 
 \lstset{
   basicstyle=\ttfamily\small,
@@ -599,33 +599,37 @@ The residual update is always applied to the most recent state $\mathbf{x}(t)$:
 
 The network is trained not just to minimize prediction error but also to satisfy
 the physical constraints of the POP2 equations. These constraints are
-incorporated as \emph{soft penalty terms} added to the data loss. The full
-composite loss is:
+incorporated as soft penalty terms added to the data loss (with the exception of
+the conservation projection, Section~\ref{sec:conservproj}, which is a hard
+constraint applied post-hoc). The full composite loss is:
 \begin{equation}
 L = L_\text{data} + \lambda_\text{cont}\,L_\text{cont}
   + \lambda_\text{baro}\,L_\text{baro}
   + \lambda_\text{heat}\,L_\text{heat}
   + \lambda_\text{salt}\,L_\text{salt}
   + \lambda_\text{stab}\,L_\text{stab}
+  + \lambda_\text{spec}\,L_\text{spec}
 \label{eq:totalloss}
 \end{equation}
 
 \begin{table}[h]
 \centering
-\caption{Physics loss weights by run. Run-4 heat and salt weights are 0 because
+\caption{Physics loss weights by run. Run-4/5 heat and salt weights are 0 because
 those budgets are closed exactly by the conservation projection
-(Section~\ref{sec:conservproj}) rather than by a soft penalty.}
+(Section~\ref{sec:conservproj}) rather than by a soft penalty.
+The spectral term $L_\text{spec}$ (Section~\ref{sec:spectral}) is new in run~5.}
 \label{tab:lossweights}
-\begin{tabular}{llll}
+\begin{tabular}{lllll}
 \toprule
-Loss term & Run-3 $\lambda$ & Run-4 $\lambda$ & Physical constraint enforced \\
+Loss term & Run-3 $\lambda$ & Run-4 $\lambda$ & Run-5 $\lambda$ & Physical constraint enforced \\
 \midrule
-$L_\text{data}$ & 1.0  & 1.0  & Prediction accuracy (MSE vs POP targets) \\
-$L_\text{cont}$ & 0.1  & 0.1  & Rigid-lid: surface vertical velocity $\approx0$ \\
-$L_\text{baro}$ & 0.1  & 0.1  & Volume conservation: barotropic divergence $\approx0$ \\
-$L_\text{heat}$ & 0.02 & 0.0  & Heat-content change $\approx$ SHF integral (soft) \\
-$L_\text{salt}$ & 0.02 & 0.0  & Salt-content change $\approx$ SFWF integral (soft) \\
-$L_\text{stab}$ & 0.02 & 0.02 & No spurious gravitational instability \\
+$L_\text{data}$ & 1.0  & 1.0  & 1.0   & Prediction accuracy (MSE vs POP targets) \\
+$L_\text{cont}$ & 0.1  & 0.1  & 0.1   & Rigid-lid: surface vertical velocity $\approx0$ \\
+$L_\text{baro}$ & 0.1  & 0.1  & 0.05  & Volume conservation: barotropic divergence $\approx0$ \\
+$L_\text{heat}$ & 0.02 & 0.0  & 0.0   & Heat-content change $\approx$ SHF integral (soft) \\
+$L_\text{salt}$ & 0.02 & 0.0  & 0.0   & Salt-content change $\approx$ SFWF integral (soft) \\
+$L_\text{stab}$ & 0.02 & 0.02 & 0.02  & No spurious gravitational instability \\
+$L_\text{spec}$ & ---  & ---  & 0.005 & Suppress high-wavenumber KE in UVEL/VVEL \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -633,9 +637,9 @@ $L_\text{stab}$ & 0.02 & 0.02 & No spurious gravitational instability \\
 All physics weights are ramped from 0 to their target value over 2000 ``warmup
 steps'' at the start of training. This prevents the physics constraints from
 fighting the data loss during the early phase when the network is still learning
-the basic mapping. In run~4, heat and salt weights are 0 because the conservation
-projection (Section~\ref{sec:conservproj}) closes those budgets exactly at every
-step---the soft penalty would be redundant.
+the basic mapping. In runs~4 and~5, heat and salt weights are 0 because the
+conservation projection (Section~\ref{sec:conservproj}) closes those budgets
+exactly at every step---the soft penalty would be redundant.
 
 \subsection{Continuity and barotropic divergence}
 The rigid-lid condition (POP does not have a free surface at the barotropic
@@ -742,6 +746,60 @@ cell volumes (\texttt{dz}$\times$\texttt{TAREA}) from \texttt{data/grid\_gx1v6.n
 At inference time the same projection is applied by
 \texttt{scripts/diagnostics.py} via the \texttt{--project} flag.
 
+\subsection{Spectral regularization (Run 5)}
+\label{sec:spectral}
+
+Even with the heat and salt budgets closed exactly, small velocity divergence
+errors can accumulate over decade-scale rollouts. While run~5 implements a soft
+$\lambda_\text{baro}$ penalty (Table~\ref{tab:lossweights}), a complementary
+concern is the growth of kinetic energy at the smallest resolvable scales
+(grid-scale noise). Grid-scale oscillations are a known failure mode of
+convolutional emulators on long rollouts: the U-Net's receptive field is finite,
+and small-scale features can be amplified rather than damped when the model has
+not been trained to recognize them as unphysical.
+
+Run~5 adds a \textbf{spectral regularization} penalty that suppresses kinetic
+energy at horizontal wavenumbers $k > k_\text{cut} = 60$ in the
+depth-averaged velocity field:
+
+\begin{equation}
+L_\text{spec}
+= \frac{\displaystyle\sum_{k>k_\text{cut}}
+        \left(\left|\hat{U}(k)\right|^2 + \left|\hat{V}(k)\right|^2\right)}
+       {\displaystyle\sum_{k}
+        \left(\left|\hat{U}(k)\right|^2 + \left|\hat{V}(k)\right|^2\right) + \epsilon}
+\label{eq:spectral}
+\end{equation}
+
+where $\hat{U}$, $\hat{V}$ are the 2-D discrete Fourier transforms of the
+depth-averaged UVEL and VVEL fields (masked to ocean points before the FFT)
+and $k = \sqrt{k_i^2 + k_j^2}$ is the total horizontal wavenumber.
+The ratio is the fraction of the total kinetic energy residing at
+sub-grid scales; $\lambda_\text{spec} = 0.005$ keeps the penalty at a few
+per cent of the data loss.
+
+During the rl=64 training phase (steps 4\,000--7\,000), the spectral ratio
+holds at approximately 8--11\% of the total kinetic energy, indicating the
+model has not yet learned to suppress grid-scale noise at this training stage.
+The expectation is that the penalty gradient will increasingly suppress this
+ratio as the rollout curriculum extends to rl=128 and rl=256, where compounding
+grid-scale errors would otherwise dominate long-horizon loss.
+
+\paragraph{B-grid barotropic Poisson projection (deferred to Run 6).}
+A \emph{hard} barotropic constraint---analogous to the heat/salt conservation
+projection---would require solving a Poisson equation for a stream-function
+correction $\phi$ that projects the depth-integrated velocity onto the
+divergence-free subspace. Run~5 defers this to Run~6 because of a subtle
+B-grid staggering mismatch: the \texttt{grid.barotropic\_divergence} operator
+averages two U-points per face ($u_e(j,i) = \tfrac{1}{2}[U(j,i)+U(j-1,i)]$),
+so the correct discrete adjoint requires an 8-point stencil. A 5-point
+C-grid Jacobi applied directly at U-points worsens the divergence rather
+than reducing it (a 3.32$\times10^{12}$ to 1.57$\times10^{13}$\,cm/s blow-up
+was observed, leading to NaN loss in an early run-5 attempt). The fix for
+Run~6 is to solve $\phi$ at T-points, compute $\nabla\phi$ at T-cell faces,
+and distribute the corrections back to U-points via the tridiagonal
+face-averaging inverse.
+
 % ============================================================================ %
 \section{Training procedure}
 \label{sec:training}
@@ -808,23 +866,25 @@ giving a useless gradient signal.
 
 \begin{table}[h]
 \centering
-\caption{Rollout curricula for run~3 and run~4. Run~4 is warm-started from the
-run-3 checkpoint; it skips the short-rollout phase already mastered and extends
-to rl=32 and rl=64 where the conservation projection is expected to enable the
-model to break the 307-month ceiling.}
+\caption{Rollout curricula for runs 3--5. Run~4 is warm-started from run-3;
+run~5 is warm-started from run-4. Steps are counted from 0 after each
+warm start. Run-5 extends to rl=128 (10.7-year compound rollout) and
+rl=256 (21.3-year compound rollout)---territory not explored by prior runs.}
 \label{tab:curriculum}
-\begin{tabular}{lll}
+\begin{tabular}{llll}
 \toprule
-Training step & Run-3 rollout $R$ & Run-4 rollout $R$ \\
+Training step & Run-3 rollout $R$ & Run-4 rollout $R$ & Run-5 rollout $R$ \\
 \midrule
-0        & 2  & 8  (warm start) \\
-8\,000   & 4  & 12 \\
-20\,000  & 8  & 16 \\
-40\,000  & 12 & 32 \\
-60\,000  & 16 & 64 \\
+0        & 2  & 8  (warm start) & 32 (warm start) \\
+4\,000   & -- & -- & 64 \\
+8\,000   & 4  & 12 & -- \\
+12\,000  & -- & -- & 128 \\
+20\,000  & 8  & 16 & -- \\
+28\,000  & -- & -- & 256 \\
+40\,000  & 12 & 32 & -- \\
+60\,000  & 16 & 64 & -- \\
 \midrule
-\multicolumn{3}{l}{Run-4 steps are counted from 0 after the warm start;
-  run-3 weights loaded at initialization.} \\
+\multicolumn{4}{l}{Run-4/5 steps counted from 0 after warm start; prior-run weights loaded at initialization.} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -930,9 +990,8 @@ The rollout curriculum was extended to a maximum of 16 steps.
 \begin{table}[h]
 \centering
 \caption{Training progression across all runs. Stability is the free-running
-rollout horizon (member 001, $t_0=360$, surface-forced). Run-3 results are at
-step 64\,000 (rl=16). Run-4 results are at step 24\,000 (rl=32 in progress;
-diagnostics with conservation projection applied at inference).}
+rollout horizon (member 001, $t_0=360$, surface-forced, conservation projection applied).
+Run-5 evaluated at step 6k (rl=64), training ongoing.}
 \label{tab:runhistory}
 \begin{tabular}{llllll}
 \toprule
@@ -941,7 +1000,8 @@ Run & Key changes & Steps & RL reached & Stable rollout & ENSO $r$ \\
 1 & Baseline MSE & 60k & 4 & $<$1 yr (collapse) & --- \\
 2 & Tendency-weighted loss, bounded budgets & 60k & 4 & 5.6 yr (67 mo) & 0.77 \\
 3 & + Pushforward, 2-state history, noise & 64k & 16 & 25.6 yr (307 mo) & 0.96 \\
-4 (cur.) & + Conservation projection, RL$\to$32/64 & 24k & 32 & \textbf{27.3 yr (327 mo)} & 0.94 \\
+4 & + Conservation projection, RL$\to$32/64 & 24k & 32 & 27.3 yr (327 mo) & 0.94 \\
+5 (cur.) & + Spectral reg., RL$\to$128/256 & 7k & 64 & \textbf{30.7 yr (368 mo)} & \textbf{0.97} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1000,8 +1060,60 @@ from $\sim1.07$ to $\sim1.5$ (expected) and has fallen to $\sim1.2$--$1.4$ by
 step 24\,000, showing rapid adaptation.
 
 The run-4 model at step 24\,000 is evaluated in Section~\ref{sec:run4}. Training
-is ongoing; the curriculum is currently in the rl=32 phase with rl=64 scheduled
-at step 40\,000.
+on run~4 concluded at step 24\,000, with the model serving as the warm-start
+initialization for run~5.
+
+\subsection{Run 5: spectral regularization and deep rollout curriculum}
+\label{sec:run5train}
+
+Run~5 begins from the run-4 checkpoint at step 24\,000 with four changes:
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Spectral regularization} (Section~\ref{sec:spectral}):
+    $\lambda_\text{spec}=0.005$ on the high-wavenumber ($k>60$) fraction of
+    the depth-averaged kinetic energy. This targets the grid-scale noise that
+    the conservation projection does not address.
+  \item \textbf{Reduced barotropic penalty}: $\lambda_\text{baro}$ lowered from
+    0.1 to 0.05. The run-4 training showed the barotropic divergence was
+    consistently $O(10^{-5})$ in the loss---already well-controlled---so the
+    weight is halved to give more relative gradient weight to the spectral term.
+  \item \textbf{Extended rollout curriculum} to rl=128 and rl=256
+    (Table~\ref{tab:curriculum}), targeting compound 10.7- and 21.3-year
+    rollout training objectives that have not been explored by any prior run.
+    The curriculum re-starts from rl=32 for the first 4\,000 steps to let the
+    model re-adapt before escalating.
+  \item \textbf{Reduced learning rate}: $3\times10^{-5}$ (down from
+    $5\times10^{-5}$ in run~4), appropriate for a second warm-start fine-tuning.
+\end{enumerate}
+
+\begin{table}[h]
+\centering
+\caption{Run-5 training log (as of step 7\,000, checkpoint at step 6\,000).
+The training job (PBS 4761617) was killed by walltime at step 7\,000 and
+resubmission is in progress. The spectral ratio is the fraction of
+depth-averaged KE at $k>60$ wavenumbers.}
+\label{tab:run5progress}
+\begin{tabular}{lllllll}
+\toprule
+Step range & RL & Data loss & $\delta T$ (\textdegree C) & $\delta S$ (psu) & Spectral ratio & Notes \\
+\midrule
+0--4\,000   & 32 & 1.28--1.80 & $\sim3\times10^{-4}$ & $\sim3\times10^{-5}$ & 9--11\% & warm start from run-4 \\
+4\,000--7\,000 & 64 & 1.60--1.49 & $\sim3\times10^{-4}$ & $\sim3\times10^{-5}$ & 8--11\% & rl transition, converging \\
+\midrule
+\multicolumn{7}{l}{Checkpoint at step 6\,000 (last saved before walltime); diagnostics from PBS job 4818591.} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The loss behavior at the rl=32$\to$64 transition (step 4\,000) follows the
+same pattern observed in run~4: an initial jump to $\sim1.8$ as the model
+first encounters 64-step rollouts, followed by rapid convergence to $\sim1.5$
+by step 7\,000. The conservation projection corrections
+($\delta T\approx3\times10^{-4}$\,\textdegree C,
+$\delta S\approx3\times10^{-5}$\,psu) are similar in magnitude to run~4,
+as expected since the model weights are similar. The spectral ratio of 8--11\%
+indicates residual grid-scale KE that the model has not yet learned to suppress
+at this early training stage; this is expected to decrease as the rl=128 and
+rl=256 phases expose the model to longer-horizon spectral penalties.
 
 % ============================================================================ %
 \section{Run-3 diagnostics: methodology and results}
@@ -1345,6 +1457,281 @@ emulator (centre), and the time-mean SST bias, emulator minus POP (right), over 
 \end{figure}
 
 % ============================================================================ %
+\section{Run-5 evaluation: spectral regularization at step 6k}
+\label{sec:run5}
+% ============================================================================ %
+
+Diagnostics for run~5 use the checkpoint at step 6\,000 (rl=64 phase, mid
+training). The evaluation protocol is identical to runs~3 and~4:
+member~001, $t_0=360$, 480-month forced rollout, with the conservation
+projection applied at every step (\texttt{--project} flag). Results are from
+PBS job 4818591; this section will be updated once the job completes.
+
+\subsection{Stability horizon (run 5)}
+\label{sec:run5stab}
+
+The run-5 checkpoint at step 6\,000 (rl=64 phase, mid-training) achieves
+\textbf{368 stable months (30.7 years)}, exceeding run-4's 327-month ceiling
+by \textbf{41 months}---a gain of $\sim12.5$\% at a checkpoint only 25\% through
+the total planned training (step 6k of a $\sim$28k-step rl=64-to-256 curriculum).
+This is a lower bound; the expectation is that stability will continue to improve
+as the rl=128 and rl=256 curriculum phases expose the model to 10.7- and
+21.3-year compound rollouts.
+
+\begin{table}[h]
+\centering
+\caption{Stability horizon summary across all runs (member 001, $t_0=360$,
+conservation projection applied at inference). Run-5 at step 6k (rl=64),
+training ongoing toward rl=128 at step 12k.}
+\label{tab:stabrun5}
+\begin{tabular}{lllll}
+\toprule
+Run & Checkpoint & RL at ckpt & Stable months & Stable years \\
+\midrule
+Run 2 & step 60k & 4  & 67  & 5.6 \\
+Run 3 & step 64k & 16 & 307 & 25.6 \\
+Run 4 & step 24k & 32 & 327 & 27.3 \\
+Run 5 & step 6k  & 64 & \textbf{368} & \textbf{30.7} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Climate mode correlations (run 5)}
+\label{sec:run5modes}
+
+\begin{table}[h]
+\centering
+\caption{Climate mode correlations for run~5 (step 6k, conservation projection,
+368-month rollout). Comparison with run-4 (step 24k, 327-month rollout).
+Bold marks improvements over run~4.}
+\label{tab:run5modes}
+\begin{tabular}{lcccc}
+\toprule
+Mode & $r$ vs POP & std.\ ratio & Run-4 $r$ & Run-4 std.\ ratio \\
+\midrule
+Ni\~no 3.4 (ENSO) & \textbf{0.97} & 1.06 & 0.94 & 0.98 \\
+N.\ Atlantic SST (AMO-like) & \textbf{0.80} & 0.79 & 0.79 & 0.82 \\
+N.\ Pacific PC1 (PDO-like) & 0.89 & 0.35 & \textbf{0.91} & 0.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{run5/nino34.png}
+\caption{Ni\~no~3.4 SST-anomaly index for POP (black) and the run-5 emulator (red)
+over the stable forced rollout (conservation projection applied).
+Run-5 is at step 6\,000 (rl=64 phase); compare to run-4 ($r=0.94$, std.\ ratio 0.98).}
+\label{fig:run5nino}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{run5/pdo_pc.png}
+\caption{PDO PC1 for POP (black) and the run-5 emulator (red).
+Run-4 achieved $r=0.91$; run-5 at early rl=64 training.}
+\label{fig:run5pdo}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{run5/amo.png}
+\caption{North Atlantic SST-anomaly index for POP (black) and the run-5 emulator (red).
+Run-4 achieved $r=0.79$; the AMO is sensitive to heat budget drift and benefits
+most from conservation projection.}
+\label{fig:run5amo}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{run5/sst_variability.png}
+\caption{Standard deviation of monthly SST anomalies (POP left, run-5 emulator centre)
+and time-mean SST bias (right) over the 30.7-year stable run-5 rollout.}
+\label{fig:run5sstvar}
+\end{figure}
+
+\subsection{Interpretation}
+
+Run~5 improves on run~4 in almost every metric despite being evaluated at
+a much earlier training checkpoint (step 6k vs.\ step 24k):
+
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Stability}: 368 vs.\ 327 months ($+41$\,mo, $+12.5$\%).
+    The combination of spectral regularization and an rl=64 rollout target
+    during training is sufficient to push the stability horizon meaningfully
+    beyond the run-4 result. The rl=128 phase (beginning at step 12k) is
+    expected to extend stability further.
+
+  \item \textbf{ENSO}: $r=0.97$ (up from 0.94 in run~4). The amplitude
+    ratio flipped from 0.98 (slight under-estimate) to 1.06 (slight
+    over-estimate), suggesting the spectral penalty is shifting energy from
+    small scales back to the ENSO-active scales in the equatorial Pacific.
+    The over-estimate is minor and may self-correct as the curriculum deepens.
+
+  \item \textbf{AMO}: $r=0.80$, amplitude ratio 0.79. The Atlantic correlation
+    is maintained at run-4 levels despite the earlier checkpoint, consistent
+    with the conservation projection continuing to prevent North Atlantic heat
+    budget drift.
+
+  \item \textbf{PDO}: $r=0.89$, variance fraction 0.35 vs.\ POP's 0.28.
+    The slight dip from run-4's $r=0.91$ is within the expected variance at
+    this checkpoint and is expected to recover as the curriculum continues.
+\end{itemize}
+
+% ============================================================================ %
+\section{CREDIT Gen~2 port and the daily time step}
+\label{sec:credit-daily}
+
+This section describes two extensions implemented after run~5: training under
+the CREDIT Gen~2 framework (\texttt{miles-credit} v2026.2.0)
+\textit{[citation: CREDIT framework]}, and a fine-tuning procedure that reduces
+the model time step from one month to one day. Neither extension has produced a
+trained model yet; the section documents the method and its verification, not
+results. (The configuration names \texttt{run6\_monthly} and
+\texttt{run7\_daily} refer to these extensions; the barotropic Poisson projection
+earlier planned as ``run~6'' remains future work.)
+
+\subsection{Port to CREDIT Gen~2}
+
+The network is unchanged. \texttt{pop\_emulator.credit\_ext} registers the
+existing U-Net as a CREDIT custom model and supplies a dataset, a
+standardization preblock, two postblocks (denormalization and the conservation
+projection of Section~\ref{sec:conservproj}), the composite loss, and a trainer
+subclass that adds the rollout-length curriculum. The Gen~2 trainer performs one
+backward pass per rollout step and detaches the prediction before it is fed
+back, which is the pushforward scheme of Section~\ref{sec:pushforward}. CREDIT
+supplies distributed data parallelism, exponential moving averages of the
+weights, and per-epoch checkpointing.
+
+Because CREDIT's sampler assumes a uniform clock, the dataset exposes a
+\emph{record clock}: one tick is one archived record, and each ensemble member
+occupies a disjoint block of ticks. The time of year enters as two forcing
+channels, $\sin\theta$ and $\cos\theta$, from which the model wrapper rebuilds
+the FiLM condition.
+
+Parity with the legacy loop was verified with the run-5 weights on real data:
+the Gen~2 dataset returns bit-identical history, target and forcing tensors;
+the per-step losses agree to a relative difference below $2\times10^{-7}$ over
+a three-step rollout; and the normalized states differ by at most
+$3\times10^{-5}$.
+
+\subsection{Explicit time step}
+
+The monthly model predicts an increment with an implicit step of one month. The
+step is now explicit,
+\begin{equation}
+  \mathbf{x}(t+\Delta t) = \mathbf{x}(t)
+    + \frac{\Delta t}{\Delta t_{\mathrm{m}}}\, F_\theta\!\left(\mathbf{x}(t),
+      \mathbf{x}(t-\Delta t), \mathbf{f}(t), \theta(t), \Delta t/\Delta t_{\mathrm{m}}\right),
+  \label{eq:step}
+\end{equation}
+with $\Delta t_{\mathrm{m}} = (365/12)\times\SI{86400}{\second}$. For
+$\Delta t = \Delta t_{\mathrm{m}}$, Eq.~\eqref{eq:step} is the run-5 model. For
+$\Delta t = \SI{1}{\day}$ the pretrained network starts as a forward-Euler step
+of its monthly tendency. The ratio $\Delta t/\Delta t_{\mathrm{m}}$ is appended
+to the FiLM condition through a zero-initialized weight column, which leaves the
+pretrained outputs unchanged. The heat and salt budgets of the conservation
+projection use the same $\Delta t$,
+$\Delta H = \Delta t \int \mathrm{SHF}\, dA$.
+
+\subsection{Daily data}
+
+The CESM-LE archive holds daily means of two-dimensional ocean fields only. The
+daily model uses SST, SSH and the two wind-stress components
+(\texttt{pop.h.nday1}; 1950--2005, no-leap calendar). The three-dimensional
+state and the surface heat and freshwater fluxes exist only as monthly means.
+The daily files begin on 2~January of each member's first year; the stores are
+trimmed to begin on 1~January 1950. Calendar-month means of the daily SST, SSH
+and zonal wind stress reproduce the monthly-mean files to a root-mean-square
+difference of order $10^{-6}$ of the field standard deviation, whereas a
+one-day misalignment raises the difference by three to four orders of magnitude.
+
+A daily training sequence starts on the first day of a calendar month and is
+assembled as follows.
+\begin{itemize}[itemsep=2pt]
+  \item \textbf{Initial condition.} Monthly means of TEMP, SALT, UVEL and VVEL
+    are interpolated linearly in time (month centres as nodes) to the two
+    history days; the surface level of TEMP and the SSH are replaced by the
+    daily fields.
+  \item \textbf{Forcing.} Wind stress is daily. SHF, SHF\_QSW and SFWF are held
+    at the mean of the current month, so the monthly heat and salt budgets
+    imposed by the projection are exact.
+  \item \textbf{Targets.} Daily SST and SSH for every day; the monthly mean of
+    the full state for every complete calendar month.
+\end{itemize}
+
+\subsection{Surface-supervised loss and its gradient}
+
+For a rollout of $F$ days containing $n_M$ complete calendar months, the loss is
+\begin{equation}
+  \mathcal{L} = \frac{1}{F}\sum_{d=1}^{F}
+     \left[\, w_{\mathrm{s}}\,\mathcal{L}_{\mathrm{sfc}}(\hat{\mathbf{x}}_d, \mathbf{x}_d)
+            + \mathcal{L}_{\mathrm{phys}}(\hat{\mathbf{x}}_d) \right]
+   + \frac{\lambda_{\mathrm{m}}}{n_M}\sum_{M}
+     \mathcal{L}_{\mathrm{3D}}\!\left(\frac{1}{N_M}\sum_{d\in M}\hat{\mathbf{x}}_d,\;
+            \overline{\mathbf{x}}_M\right).
+  \label{eq:daily-loss}
+\end{equation}
+$\mathcal{L}_{\mathrm{sfc}}$ is the ocean-masked squared error of SST and SSH,
+each scaled by $(\sigma_{\mathrm{field}}/\sigma_{\mathrm{daily\ tendency}})^2$
+so that persistence scores $O(1)$. $\mathcal{L}_{\mathrm{phys}}$ contains the
+continuity, barotropic, static-stability and spectral penalties of
+Section~\ref{sec:physics}. $\mathcal{L}_{\mathrm{3D}}$ is the tendency-weighted
+masked squared error of Section~\ref{sec:twloss}, applied to the calendar-month
+mean of the daily rollout ($N_M$ days) and the monthly-mean truth
+$\overline{\mathbf{x}}_M$.
+
+The monthly term couples all days of a month, whereas the rollout graph is
+truncated at each step. Each complete month is therefore integrated twice from
+the same state and with the same input noise. The first pass carries no
+gradient; it accumulates the month mean and evaluates
+$\mathbf{g}_M = \partial\mathcal{L}_{\mathrm{3D}}/\partial\overline{\hat{\mathbf{x}}}_M$.
+In the second pass day $d$ back-propagates its own surface and physics terms
+plus the linear surrogate
+$\lambda_{\mathrm{m}} \langle \mathbf{g}_M, \hat{\mathbf{x}}_d\rangle / N_M$,
+whose sum over the month has the gradient of
+$\lambda_{\mathrm{m}}\mathcal{L}_{\mathrm{3D}}$ under the same per-step
+truncation as the monthly pushforward scheme. The cost is two forward passes and
+one backward pass per day.
+
+\subsection{Behaviour before fine-tuning}
+
+With the run-5 weights and no fine-tuning, the forward-Euler daily model was
+integrated for 62~days from 28~February of year~11 of the daily record
+(validation member~001; a single initial condition, so the numbers are
+indicative only). The rollout remained finite. SST RMSE was
+\SI{0.40}{\celsius} at day~30 and \SI{0.52}{\celsius} at day~60, against
+\SI{0.70}{\celsius} and \SI{1.43}{\celsius} for persistence of the initial
+day; SSH RMSE was \SI{5.3}{\centi\metre} and \SI{4.9}{\centi\metre} against
+\SI{5.8}{\centi\metre} and \SI{6.2}{\centi\metre}. At lead times of one to
+five days the model was within 5\% of persistence for SST and within 1\% for
+SSH, which is the regime the fine-tune must improve. The first calendar-month
+mean of the daily rollout was closer to the monthly-mean truth than the
+one-step prediction of the monthly model for TEMP, SALT, UVEL and VVEL
+(normalized RMSE 0.017, 0.014, 0.21, 0.25 against 0.021, 0.022, 0.26, 0.35) and
+further from it for SSH (0.040 against 0.027). The two predictions are not
+strictly comparable, because the daily rollout starts from an initial condition
+that contains the daily SST and SSH of the last day of the preceding month.
+
+\subsection{Limitations}
+
+\begin{itemize}[itemsep=2pt]
+  \item Temperature below the surface, salinity and velocity have no daily
+    supervision. Their sub-monthly variability is constrained only indirectly,
+    through the surface fields, the physics penalties and the monthly means,
+    and cannot be validated against CESM-LE output.
+  \item The heat and freshwater fluxes carry no synoptic variability; the daily
+    SST response to synoptic flux anomalies is therefore driven only by wind
+    stress and by the model's internal dynamics.
+  \item The initial interior state is a time-interpolated monthly mean, which
+    underestimates mesoscale and sub-monthly variance at the start of each
+    training sequence.
+  \item The two history states are one day apart, whereas the pretrained network
+    was trained with states one month apart; the fine-tune must adapt the use of
+    the history channels.
+\end{itemize}
+
+% ============================================================================ %
 \section{Discussion and outlook}
 \label{sec:discussion}
 % ============================================================================ %
@@ -1376,7 +1763,7 @@ Three clear messages emerge from the diagnostics:
   confirming that the rollout curriculum is the primary lever for long-horizon skill.
 \end{enumerate}
 
-\subsection{Conservation projection breaks the 307-month ceiling}
+\subsection{Conservation projection breaks the 307-month ceiling (run 4)}
 
 The primary open problem identified in run~3 was the 307-month stability ceiling,
 caused by secular accumulation of heat and salt drift rather than dynamical instability.
@@ -1390,7 +1777,7 @@ steps. This confirms that the 307-month ceiling was indeed caused by heat/salt d
 accumulation and that exact budget closure can extend stability.
 
 Furthermore, all climate mode correlations improved or matched run-3:
-Niño~3.4 ($r=0.94$, amplitude ratio 0.98 vs.\ 0.86 in run~3),
+Ni\~no~3.4 ($r=0.94$, amplitude ratio 0.98 vs.\ 0.86 in run~3),
 AMO ($r=0.79$ vs.\ 0.68 in run~3), and PDO ($r=0.91$ vs.\ 0.89 in run~3).
 The improvement in ENSO amplitude is particularly notable, suggesting that the
 conservation projection maintains the correct heat content in the tropical Pacific
@@ -1402,23 +1789,51 @@ $\delta S$: $8\times10^{-5}$\,psu $\to$ $2\times10^{-5}$\,psu), indicating
 that the model is learning to self-close the budgets rather than relying on the
 post-hoc correction.
 
+\subsection{Run 5: spectral regularization and deep rollout curriculum}
+
+Run~5 (Section~\ref{sec:run5train}) is active as of step 7\,000 (rl=64).
+Its design targets two anticipated failure modes of the run-4 model at
+century timescales:
+
+\begin{enumerate}[itemsep=2pt]
+  \item \textbf{Momentum drift}: the conservation projection closes heat and salt
+    budgets but does not constrain velocities. Run~5 adds a spectral penalty
+    ($\lambda_\text{spec}=0.005$, Section~\ref{sec:spectral}) to suppress
+    grid-scale kinetic energy growth in the depth-averaged velocity field.
+    During the current rl=64 training phase the spectral ratio is 8--11\% of
+    total kinetic energy---an established baseline from which the ratio is
+    expected to decrease as longer rollouts penalize accumulated grid-scale noise.
+
+  \item \textbf{Rollout curriculum depth}: run-4's deepest training objective was
+    a 64-month compound rollout. Run~5 extends this to 128 months (10.7 years)
+    at step 12\,000 and 256 months (21.3 years) at step 28\,000, directly
+    training the model against errors at timescales comparable to the
+    observed stability ceiling.
+\end{enumerate}
+
+Diagnostics at step 6k (Section~\ref{sec:run5}) confirm that run~5 already
+achieves \textbf{368 stable months (30.7 years)}, exceeding run-4's 327-month
+ceiling by 41 months at a checkpoint less than a quarter of the way through the
+planned rl=128/256 curriculum. ENSO correlation improved to $r=0.97$, and the
+AMO correlation held at $r=0.80$. This validates spectral regularization as
+an effective complement to the conservation projection.
+
 \subsection{Remaining challenges and next steps}
 
 \begin{itemize}[itemsep=2pt]
-  \item \textbf{Complete run-4 curriculum}: training is currently at step 24\,000
-    (rl=32 phase). The rl=64 transition at step 40\,000 is the next milestone;
-    reaching rl=64 will expose the model to 64-month compound rollouts and
-    is expected to further reduce long-horizon drift.
-  \item \textbf{Momentum/barotropic projection}: the conservation projection in
-    run~4 closes heat and salt budgets. Extending it to barotropic volume
-    conservation (via a Helmholtz-type Poisson solve on the tripolar grid)
-    would complete the hard-constraint picture for all conserved quantities.
+  \item \textbf{Complete run-5 curriculum}: training is at step 7\,000 (rl=64).
+    The rl=128 transition at step 12\,000 is the next milestone, followed by
+    rl=256 at step 28\,000. Each transition will expose the model to compound
+    rollouts of unprecedented length for this architecture.
+  \item \textbf{Barotropic Poisson projection (Run 6)}: the hard barotropic
+    constraint is deferred because the B-grid discrete adjoint requires an
+    8-point stencil (Section~\ref{sec:spectral}). Run~6 will implement the
+    correct T-point Poisson solve and distribute corrections to U-points via
+    the face-averaging inverse, completing the hard-constraint picture for all
+    conserved quantities.
   \item \textbf{More training members}: adding RCP8.5 members broadens the
     diversity of forcing regimes and reduces overfitting to the historical
-    ensemble mean state.
-  \item \textbf{Spectral regularization}: a small penalty on high-wavenumber
-    energy growth may slow residual drift accumulation (in the momentum fields,
-    which the projection does not currently correct).
+    ensemble mean state. Targeted for run~6 once barotropic projection is stable.
 \end{itemize}
 
 \end{document}

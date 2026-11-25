@@ -11,6 +11,10 @@ requires-python = ">=3.10"
 authors = [{ name = "Aneesh Subramanian" }]
 license = { text = "MIT" }
 
+[project.optional-dependencies]
+# CREDIT Gen 2 training path (pop_emulator.credit_ext, scripts/train_credit.py).
+credit = ["miles-credit==2026.2.0", "zarr>=3.0", "dask>=2024.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

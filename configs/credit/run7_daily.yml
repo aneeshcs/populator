@@ -1,0 +1,167 @@
+# Run 7 — daily-step fine-tune of the monthly emulator (surface-supervised).
+#
+# One model step = one day.  Daily truth exists for SST, SSH and wind stress
+# only (CESM-LE pop.h.nday1); the 3-D state is constrained through
+# calendar-month means of the daily rollout (pop_emulator/credit_ext/
+# trainer_daily.py).  Emulator-side settings: configs/run7_daily.yaml.
+#
+# Prerequisites:
+#   qsub jobs/rechunk_daily.pbs                                  # daily Zarr stores
+#   python scripts/compute_daily_stats.py --config configs/run7_daily.yaml \
+#       --daily-zarr-root /glade/derecho/scratch/acsubram/pop_emulator_zarr_daily
+#   python scripts/convert_ckpt_to_credit.py --checkpoint <monthly checkpoint> \
+#       --config configs/credit/run7_daily.yml --cond-step --reset-epoch
+# Launch:
+#   python scripts/train_credit.py -c configs/credit/run7_daily.yml
+
+save_loc: /glade/work/acsubram/GitRepos/pop-ocean-emulator/checkpoints/credit/run7_daily
+seed: 0
+
+custom_objects:
+  PopLENSDailyDataset:
+    object_type: dataset
+    module_path: pop_emulator.credit_ext.dataset_daily
+  PopNormalize:
+    object_type: preblock
+    module_path: pop_emulator.credit_ext.preblocks
+  pop_ocean_unet:
+    object_type: model
+    module_path: pop_emulator.credit_ext.model
+    module_name: PopOceanUNet
+  PopDenormalize:
+    object_type: postblock
+    module_path: pop_emulator.credit_ext.postblocks
+  OceanConservationProjection:
+    object_type: postblock
+    module_path: pop_emulator.credit_ext.postblocks
+  PopDailyLoss:
+    object_type: loss
+    module_path: pop_emulator.credit_ext.loss
+  PopMaskedRMSE:
+    object_type: metric
+    module_path: pop_emulator.credit_ext.loss
+
+# ---------------------------------------------------------------------------
+# Data.  Record clock as in run 6: one 1h tick is one DAILY record; day 0 is
+# 1950-01-01 (noleap) for every member.  Rollouts start on the first day of a
+# month (see pop_emulator/credit_ext/dataset_daily.py).
+# ---------------------------------------------------------------------------
+data:
+  timestep: "1h"
+  start_datetime: "2000-01-01"
+  end_datetime: "2100-01-01"
+  history_len: 2
+  forecast_len: 31            # days; overridden per epoch by trainer.rollout_curriculum
+  source:
+    POP: &pop_source
+      dataset_type: PopLENSDailyDataset
+      root: /glade/campaign/collections/gdex/data/d651027/cesmLE/CESM-CAM5-BGC-LE/ocn/proc/tseries/monthly
+      zarr_root: /glade/derecho/scratch/acsubram/pop_emulator_zarr          # monthly 3-D state and fluxes
+      daily_zarr_root: /glade/derecho/scratch/acsubram/pop_emulator_zarr_daily  # daily SST, SSH, TAUX, TAUY
+      experiment: B20TRC5CNBDRD
+      members: ["002", "003", "004", "005", "006"]   # members with daily stores
+      t_start: 0              # day index since 1950-01-01
+      t_end: -1
+      records_per_year: 365
+      read_ahead: 16          # monthly records buffered per variable and worker (~1.9 GB)
+      read_ahead_days: 400    # daily records buffered per variable and worker
+      variables:
+        prognostic:
+          vars_3D: [TEMP, SALT, UVEL, VVEL]
+          vars_2D: [SSH]
+        dynamic_forcing:
+          vars_2D: [SHF, SHF_QSW, SFWF, TAUX, TAUY, TIME_SIN, TIME_COS]
+
+validation_data:
+  timestep: "1h"
+  start_datetime: "2000-01-01"
+  end_datetime: "2100-01-01"
+  history_len: 2
+  forecast_len: 31            # validation loss = surface + physics loss at lead 31 days
+  source:
+    POP:
+      <<: *pop_source
+      members: ["001"]
+
+preblocks:
+  per_step:
+    normalize:
+      type: PopNormalize
+      args: {pop_config: configs/run7_daily.yaml}
+    concat:
+      type: concat
+
+postblocks:
+  per_step:
+    reconstruct:
+      type: reconstruct
+      args: {detach: false}   # keep the projection inside the per-step gradient
+    denormalize:
+      type: PopDenormalize
+      args: {pop_config: configs/run7_daily.yaml}
+    conservation:
+      type: OceanConservationProjection
+      args: {pop_config: configs/run7_daily.yaml}
+
+model:
+  type: pop_ocean_unet
+  pop_config: configs/run7_daily.yaml
+  levels: 60                  # read by CREDIT's channel schema
+  noise_injection: 0.003      # monthly value 0.1 scaled by ~dt/dt_month (daily increments are ~30x smaller)
+  amp_dtype: bf16             # autocast inside the model; trainer.amp stays false
+
+loss:
+  type: PopDailyLoss
+  args: {pop_config: configs/run7_daily.yaml, surface_weight: 1.0, monthly_weight: 1.0}
+
+metrics:
+  type: PopMaskedRMSE
+  args: {pop_config: configs/run7_daily.yaml}
+
+trainer:
+  type: pop-gen2-daily
+  parallelism: {data: ddp, tensor: 1, domain: 1}
+
+  # Warm start from the converted monthly checkpoint (weights only; the FiLM
+  # input weight carries one extra zero column for the step-ratio condition).
+  load_weights: true
+  load_optimizer: false
+  load_scaler: false
+  load_scheduler: false
+  reload_epoch: true          # on resubmission, continue from the last saved epoch
+  start_epoch: 0
+
+  # One epoch = 50 sequences per rank; a checkpoint is written after every epoch.
+  # Measured on one A100 (smoke test): ~0.9 s per rollout day including both
+  # passes, i.e. ~27 s per 31-day and ~50 s per 62-day sequence; a 372-day
+  # sequence is then ~5-6 min and an epoch at that length ~5 h.
+  epochs: 300
+  batches_per_epoch: 50
+  # [first sequence, rollout length in days]: 1, 2, 4 and 12 months (31 N days
+  # always contains N complete calendar months from a first-of-month start).
+  rollout_curriculum:
+    - [0, 31]
+    - [1000, 62]
+    - [2000, 124]
+    - [3000, 372]
+
+  train_batch_size: 1
+  valid_batch_size: 1
+  grad_accum_every: 1
+  grad_max_norm: 1.0
+  learning_rate: 1.0e-5
+  weight_decay: 0.05
+  use_scheduler: false
+  amp: false
+  thread_workers: 4
+  valid_thread_workers: 2
+  prefetch_factor: 2
+
+  skip_validation: false
+  valid_batches_per_epoch: 4
+  training_metric: valid_loss
+  save_best_weights: true
+  save_backup_weights: true
+  use_ema: true
+  ema_decay: 0.999
+  use_tensorboard: true

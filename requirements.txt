@@ -16,3 +16,8 @@ tqdm>=4.66
 tensorboard>=2.15
 matplotlib>=3.8
 pytest>=8.0
+
+# CREDIT Gen 2 training path (optional; `pip install -e .[credit]`).
+# Tested env: /glade/work/acsubram/conda-envs/credit-gen2 (Python 3.13, torch 2.14.1+cu126).
+# miles-credit==2026.2.0
+# zarr>=3.0

@@ -153,6 +153,14 @@ class OceanEmulator(nn.Module):
         # Number of previous states fed as input history (Samudra-style). The
         # residual update is always applied to the most recent state.
         self.history = int(m.get("history", 1))
+        # Explicit step: x(t+Δt) = x(t) + step_scale * F(.), with
+        # step_scale = Δt / Δt_ref and Δt_ref the step the network was trained
+        # at (one month).  step_scale = 1 leaves the monthly model unchanged;
+        # at a shorter step it initialises the model as a forward-Euler step of
+        # the monthly tendency.  With cond_step the ratio is also appended to
+        # the FiLM condition so the network can depend on the step length.
+        self.step_scale = float(m.get("step_scale", 1.0))
+        self.cond_step = bool(m.get("cond_step", False))
 
         # Static channels: f, mask2d, normalized depth-at-column, sin/cos(lat),
         # sin/cos(lon). Registered as buffers, built lazily on first forward.
@@ -162,7 +170,8 @@ class OceanEmulator(nn.Module):
 
         n_static = 7
         cin = self.history * self.n_state + n_forcing + n_static
-        cond_dim = 2 + n_forcing  # month (sin,cos) + global forcing means
+        # annual phase (sin, cos) + global forcing means (+ step ratio)
+        cond_dim = 2 + n_forcing + int(self.cond_step)
         self.net = OceanUNet(
             cin, self.n_state,
             width=m.get("width", 96), depth=m.get("depth", 4),
@@ -210,7 +219,9 @@ class OceanEmulator(nn.Module):
             self._build_static(state_in.device, state_in.dtype)
         static = self.static_ch.expand(B, -1, -1, -1)
         inp = torch.cat([state_in, forcing_norm, static], dim=1)
-        out = self.net(inp, cond)
+        if self.cond_step:
+            cond = torch.cat([cond, cond.new_full((B, 1), self.step_scale)], dim=-1)
+        out = self.step_scale * self.net(inp, cond)
         if self.residual:
             out = base + out
         return out

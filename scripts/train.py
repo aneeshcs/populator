@@ -60,7 +60,8 @@ def pack_forcing(batch_forcing, forcing_list, s, device):
 def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
                      forcing_list, rollout_len, noise, device, step, accum,
                      use_amp, amp_dtype, grid=None, project=False,
-                     baro_project=False, baro_n_iter=20):
+                     baro_project=False, baro_n_iter=20, dt=None,
+                     records_per_year=12):
     """Memory-safe pushforward rollout with optional input-noise injection.
 
     The model is unrolled ``rollout_len`` months feeding its own *detached*
@@ -110,7 +111,7 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
             pred_phys = packer.unpack(normalizer.denormalize(x_next.float()))
             if project:
                 pred_phys, step_proj = physics_mod.conservation_projection(
-                    pred_phys, prev_phys, forcing_phys, grid)
+                    pred_phys, prev_phys, forcing_phys, grid, dt=dt)
                 for k, v in step_proj.items():
                     proj_diag[k] = proj_diag.get(k, v.new_zeros(())) + v / rollout_len
             if baro_project:
@@ -131,7 +132,7 @@ def pushforward_step(batch, model, packer, normalizer, fnorm, loss_fn,
         hist.append(x_next.detach())          # pushforward: feed own prediction
         if len(hist) > H:
             hist.pop(0)
-        month_emb = _advance_month_emb(month_emb)
+        month_emb = _advance_month_emb(month_emb, records_per_year)
 
     last_logs.update(proj_diag)
     return total_val / rollout_len, last_logs
@@ -226,7 +227,9 @@ def main():
                 batch, model, packer, normalizer, fnorm, loss_fn, forcing_list,
                 rl, noise, device, step, accum, use_amp, amp_dtype,
                 grid=grid, project=project,
-                baro_project=baro_project, baro_n_iter=baro_n_iter)
+                baro_project=baro_project, baro_n_iter=baro_n_iter,
+                dt=utils.step_seconds(cfg),
+                records_per_year=utils.records_per_year(cfg))
 
             if (step + 1) % accum == 0:
                 if tcfg.get("grad_clip"):
